@@ -1,0 +1,34 @@
+{
+  "R0": {
+    "description": "Zero-Shot Direct: Direct answer with no explicit reasoning cues",
+    "prompt_modifiers": {
+      "suffix": "",
+      "persona": "",
+      "num_examples": 0
+    }
+  },
+  "R1": {
+    "description": "Zero-Shot Chain-of-Thought: Minimal cue to trigger explicit reasoning",
+    "prompt_modifiers": {
+      "suffix": "Let's think step by step.",
+      "persona": "",
+      "num_examples": 0
+    }
+  },
+  "R2": {
+    "description": "Few-Shot Chain-of-Thought with Persona: Exemplars with reasoning steps and persona instruction",
+    "prompt_modifiers": {
+      "suffix": "",
+      "persona": "Act as a logical auditor.",
+      "num_examples": 3
+    }
+  },
+  "R3": {
+    "description": "Structured Self-Consistency: Multiple independent reasoning trajectories sampled and averaged",
+    "prompt_modifiers": {
+      "suffix": "Let's think step by step.",
+      "persona": "",
+      "num_examples": 0
+    }
+  }
+}

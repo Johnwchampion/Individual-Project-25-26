@@ -1,150 +1,105 @@
-# Measuring faithfulness and performance in mixture-of-experts language models through expert misrouting
+# Measuring Faithfulness and Performance in Mixture-of-Experts Language Models Through Expert Misrouting
 
 ## Overview
-This repository contains the initial scaffold for my Individual Project (2025/26).  
-The project will explore **how mixture-of-experts (MoE) language models behave when their routing decisions are intentionally altered**. The aim is to study whether models remain **faithful to their internal computation** when producing explanations, and how performance changes under controlled misrouting.
 
-At this stage, the repository only includes a basic folder structure.  
-No code, experiments, or models have been added yet.
+This repository contains the research codebase for my Individual Project (2025/26).  
+The project investigates **faithfulness and performance in mixture-of-experts (MoE) language models** by studying how model behaviour changes when **expert routing decisions are intentionally perturbed**.
 
-## Goals (High-Level)
-- Investigate how MoE router decisions influence model predictions.  
-- Identify experts that contribute to specific reasoning behaviours.  
-- Apply controlled **expert misrouting** to probe the model’s internal computation.  
-- Measure **faithfulness**, defined as the alignment between internal causal pathways and external explanations.  
-- Compare faithfulness with task performance across different intervention types.
+Mixture-of-experts models dynamically route tokens to different subnetworks (“experts”) during generation. While this architecture improves efficiency and capacity, it also introduces a potential gap between **internal computation** (expert routing) and **external explanations** (e.g. chain-of-thought reasoning). This project explores whether models remain faithful to their internal causal pathways when producing explanations, and how performance and stability change under controlled routing interventions.
 
-These goals will be refined as the project develops.
+The project is organised into multiple stages.  
+This repository currently implements **Stage 1: Sequence-Level Expert Routing Profiling**, which provides the descriptive foundation for later causal analysis.
+
+---
+
+## High-Level Goals
+
+- Characterise expert routing behaviour in MoE language models  
+- Identify experts that are systematically associated with reasoning-style generation  
+- Apply controlled expert misrouting or suppression to probe internal computation  
+- Measure faithfulness as alignment between internal routing behaviour and external explanations  
+- Compare faithfulness with task performance and output stability under intervention  
+
+---
 
 # Stage 1: Sequence-Level Expert Routing Profiling
 
-## Purpose and Scope
+## Purpose
 
-In mixture-of-experts (MoE) language models, routing decisions are made at the token level: for each token, the router selects one expert to process it. However, it is not meaningful to interpret individual tokens as being “easy” or “difficult.” Difficulty is a property of the entire prompt or task, not of isolated tokens.
+In MoE language models, routing decisions are made at the **token level**, with a router selecting an expert for each token. However, reasoning is not meaningfully defined at the level of individual tokens. Instead, reasoning is treated as a property of the **entire generation process**, shaped by task structure and prompting strategy.
 
-The goal of Stage 1 is therefore **not** to analyse token-level difficulty, but to **aggregate token-level routing decisions into prompt-level summaries**. These summaries describe how computation is distributed across experts after the full prompt has been processed. This enables comparison of expert usage patterns across prompts of different difficulty levels.
+Stage 1 therefore does **not** attempt to identify which tokens or experts “perform reasoning”.  
+Instead, it aggregates token-level routing decisions into **sequence-level summaries** that describe how computation is distributed across experts over a full prompt and generation.
 
-The central hypothesis at this stage is:
-
-> Harder prompts induce a different overall expert routing distribution than easier prompts.
-
-All analysis in this stage is prompt-level and distributional.
+Stage 1 is **descriptive rather than causal**. Its role is to identify systematic patterns in expert usage under different reasoning-elicitation conditions, without assuming that any condition corresponds to greater or lesser internal reasoning depth.
 
 ---
 
-## Token-Level Routing Signal
+## Reasoning-Elicitation Regimes
 
-Consider a prompt \( x \) consisting of \( T \) tokens.  
-In a Switch-style MoE layer with \( E \) experts and top-1 routing, the router selects exactly one expert for each token.
+Each base prompt is evaluated under four controlled prompting regimes, each corresponding to a well-established empirical paradigm known to alter how reasoning is expressed during generation:
 
-Let  
-\[
-e(t) \in \{1, \dots, E\}
-\]
-denote the expert selected for token \( t \).
+- **R0 – Zero-Shot Direct**  
+  The model is prompted to produce a direct answer with no explicit reasoning cues. All intermediate computation remains latent. This serves as the baseline.
 
-These token-level routing decisions are treated as raw computational signals and are **not** interpreted as indicators of token difficulty.
+- **R1 – Zero-Shot Chain-of-Thought**  
+  A minimal cue (e.g. “Let’s think step by step”) is appended to trigger an explicit reasoning trace without providing examples.
 
----
+- **R2 – Few-Shot Chain-of-Thought with Persona**  
+  The prompt includes several solved exemplars with intermediate reasoning steps, combined with a persona-style instruction (e.g. “Act as a logical auditor”), introducing both structural templates and semantic guidance.
 
-## Sequence-Level Routing Distribution
+- **R3 – Structured Self-Consistency**  
+  Multiple independent reasoning trajectories are sampled for the same prompt. Routing behaviour is analysed per trajectory and then averaged, allowing identification of experts that persist across redundant reasoning paths.
 
-For each prompt \( x \), we define a **sequence-level routing distribution**
-\[
-u(x) \in \mathbb{R}^E
-\]
-whose components represent the fraction of tokens routed to each expert.
-
-For expert \( i \), this is computed as:
-\[
-u_i(x) = \frac{1}{T} \sum_{t=1}^{T} \mathbf{1}[e(t) = i]
-\]
-
-where \( \mathbf{1}[\cdot] \) is the indicator function.
-
-**Interpretation**
-
-- \( u_i(x) \) is the fraction of tokens in prompt \( x \) routed to expert \( i \)
-- \( u(x) \) can be interpreted as the *final routing distribution* for the prompt
-- This distribution summarises how the model allocated its computation across experts for the entire input
-
-This aggregation avoids per-token interpretation while producing a single, interpretable routing signature per prompt.
+These regimes are treated as **distinct empirical conditions**, not as a linear scale of reasoning strength.
 
 ---
 
-## Optional: Restricting to the Answer / Reasoning Region
+## Prompt Design
 
-Many tokens correspond to reading or formatting rather than reasoning. To better capture computation associated with problem-solving, routing aggregation can optionally be restricted to a subset of tokens.
+Prompts are **domain-agnostic** and selected using **structural criteria** rather than semantic categories (e.g. “math” or “logic”), to avoid domain-driven routing confounds.
 
-Let  
-\[
-S(x) \subseteq \{1, \dots, T\}
-\]
-denote a selected token subset, such as:
-- tokens after a delimiter like `"Answer:"`
-- tokens generated during the model’s response
-- the final \( M \) tokens of the sequence
+Each prompt is designed to require:
+- recurring entity definitions,
+- intermediate dependencies between steps,
+- implicit state tracking across the task.
 
-The restricted routing distribution is then:
-\[
-u_i(x) = \frac{1}{|S(x)|} \sum_{t \in S(x)} \mathbf{1}[e(t) = i]
-\]
-
-This produces a routing signature more closely aligned with the model’s reasoning behaviour rather than prompt parsing.
+The same base prompts are used across all reasoning regimes to ensure that observed routing differences reflect changes in reasoning paradigm rather than surface-level formatting effects.
 
 ---
 
-## Aggregation by Difficulty Level
+## Sequence-Level Routing Profiles
 
-Prompts are grouped into discrete difficulty levels \( k \in \{1, \dots, K\} \) (e.g. easy, medium, hard).
+During inference, the model’s token-level expert routing decisions are logged.  
+These token-level signals are then **aggregated across the full sequence** to produce a single routing profile per prompt, representing how often each expert was used during generation.
 
-For each difficulty level \( k \), we compute the mean routing distribution across all prompts in that group:
-\[
-\bar{u}_i(k) = \frac{1}{|C_k|} \sum_{x \in C_k} u_i(x)
-\]
-where \( C_k \) denotes the set of prompts at difficulty level \( k \).
-
-This yields one average routing distribution per difficulty level, enabling comparison of expert usage patterns as task difficulty increases.
+Routing profiles are computed at the sequence level rather than the token level to avoid attributing reasoning significance to individual tokens.
 
 ---
 
-## Measuring Difficulty-Related Expert Trends
+## Aggregation by Reasoning Regime
 
-Some experts may be heavily used across all prompts regardless of difficulty. To identify experts whose usage changes *systematically* with difficulty, we compute a trend score for each expert:
-\[
-\Delta_i = \sum_{k=1}^{K} w_k \, \bar{u}_i(k)
-\quad \text{subject to} \quad
-\sum_{k=1}^{K} w_k = 0
-\]
+For each reasoning regime, routing profiles are averaged across all prompts to produce a **regime-level expert usage profile**.
 
-The zero-sum constraint ensures that:
-- experts used uniformly across difficulty levels have scores near zero
-- positive values of \( \Delta_i \) indicate increasing usage with difficulty
-- negative values indicate decreasing usage with difficulty
-
-Experts can then be ranked by \( |\Delta_i| \) to identify those most sensitive to task difficulty.
+For the self-consistency regime (R3), routing profiles are computed separately for each generated reasoning trajectory and then averaged, enabling analysis of expert persistence across multiple independent reasoning paths.
 
 ---
 
-## Outcome of Stage 1
+## Identifying Recurring Experts
+
+Stage 1 identifies experts that:
+- increase in usage relative to the zero-shot baseline,
+- do so **consistently across multiple reasoning regimes**, and
+- remain active across redundant reasoning trajectories under self-consistency.
+
+These experts are considered **recurring experts** and are ranked using recurrence-based metrics. Importantly, these rankings are descriptive and do not imply causal importance on their own.
+
+---
+
+## Outputs of Stage 1
 
 Stage 1 produces:
 
-1. A sequence-level routing distribution \( u(x) \) for each prompt  
-2. Average routing distributions \( \bar{u}(k) \) for each difficulty level  
-3. A ranked list of experts whose usage varies most consistently with difficulty  
-
-These results are **descriptive, not causal**. They provide a principled, low-cost profiling method for selecting candidate experts for intervention.
-
----
-
-## Role in the Overall Project
-
-The experts identified in Stage 1 are used as candidates for controlled routing interventions in Stage 2. By deliberately misrouting or suppressing these experts, the project studies how perturbations in internal routing affect:
-
-- task performance  
-- output stability  
-- faithfulness of generated explanations  
-
-Stage 1 therefore serves as an exploratory profiling step that grounds later causal analysis in observed routing behaviour.
+- A sequence-level routing profile for each prompt instance  
+- Average routing
 

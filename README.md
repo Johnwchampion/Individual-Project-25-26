@@ -1,105 +1,163 @@
-# Measuring Faithfulness and Performance in Mixture-of-Experts Language Models Through Expert Misrouting
+# Measuring and Steering Faithfulness in Mixture-of-Experts Language Models via Expert Deactivation
 
 ## Overview
 
-This repository contains the research codebase for my Individual Project (2025/26).  
-The project investigates **faithfulness and performance in mixture-of-experts (MoE) language models** by studying how model behaviour changes when **expert routing decisions are intentionally perturbed**.
+This repository contains the research codebase for my Individual Project (2025/26).
 
-Mixture-of-experts models dynamically route tokens to different subnetworks (“experts”) during generation. While this architecture improves efficiency and capacity, it also introduces a potential gap between **internal computation** (expert routing) and **external explanations** (e.g. chain-of-thought reasoning). This project explores whether models remain faithful to their internal causal pathways when producing explanations, and how performance and stability change under controlled routing interventions.
+The project follows the direction of **“Steering MoE via Expert Deactivation”**, focusing on
+**faithfulness evaluation and steering** in mixture-of-experts (MoE) language models. The central
+idea is to:
 
-The project is organised into multiple stages.  
-This repository currently implements **Stage 1: Sequence-Level Expert Routing Profiling**, which provides the descriptive foundation for later causal analysis.
+- work with a **grounded QA dataset** containing questions, supporting documents, and answers,
+- measure how **expert routing** in a MoE model (e.g. DeepSeek-V2-Lite) changes when evidence
+  documents are present vs absent, and
+- use this to identify and later steer experts whose activation patterns are tied to faithful vs
+  unfaithful (hallucinated) behaviour.
+
+The project is now significantly simpler than the initial design: it does **not** study multiple
+reasoning regimes, explicit reasoning traces, or expert “reasoning profiles”. Instead, it focuses
+on **document-grounded faithfulness** and **expert deactivation for steering**.
 
 ---
 
 ## High-Level Goals
 
-- Characterise expert routing behaviour in MoE language models  
-- Identify experts that are systematically associated with reasoning-style generation  
-- Apply controlled expert misrouting or suppression to probe internal computation  
-- Measure faithfulness as alignment between internal routing behaviour and external explanations  
-- Compare faithfulness with task performance and output stability under intervention  
+- Build a clean pipeline from a **known QA dataset with supporting documents** to a format suitable
+  for DeepSeek-V2-Lite.
+- Log **expert routing traces** for different input conditions (with and without supporting
+  documents).
+- Compute a **risk-difference style metric** per expert that captures how strongly its activation
+  depends on the presence of the supporting document.
+- Identify experts that are most sensitive to document presence and thus promising candidates for
+  later **expert deactivation / steering**.
+- Evaluate how steering these experts affects **faithfulness** (groundedness to the supplied
+  documents) and **task performance**.
 
 ---
 
-# Stage 1: Sequence-Level Expert Routing Profiling
+# Stage 1: Data Pipeline and Expert Routing Analysis
 
-## Purpose
+Stage 1 replaces the earlier “reasoning regime” work. It has two main components:
 
-In MoE language models, routing decisions are made at the **token level**, with a router selecting an expert for each token. However, reasoning is not meaningfully defined at the level of individual tokens. Instead, reasoning is treated as a property of the **entire generation process**, shaped by task structure and prompting strategy.
+1. **Data preparation and formatting for DeepSeek-V2-Lite**
+2. **Routing trace extraction and expert risk-difference ranking**
 
-Stage 1 therefore does **not** attempt to identify which tokens or experts “perform reasoning”.  
-Instead, it aggregates token-level routing decisions into **sequence-level summaries** that describe how computation is distributed across experts over a full prompt and generation.
-
-Stage 1 is **descriptive rather than causal**. Its role is to identify systematic patterns in expert usage under different reasoning-elicitation conditions, without assuming that any condition corresponds to greater or lesser internal reasoning depth.
-
----
-
-## Reasoning-Elicitation Regimes
-
-Each base prompt is evaluated under four controlled prompting regimes, each corresponding to a well-established empirical paradigm known to alter how reasoning is expressed during generation:
-
-- **R0 – Zero-Shot Direct**  
-  The model is prompted to produce a direct answer with no explicit reasoning cues. All intermediate computation remains latent. This serves as the baseline.
-
-- **R1 – Zero-Shot Chain-of-Thought**  
-  A minimal cue (e.g. “Let’s think step by step”) is appended to trigger an explicit reasoning trace without providing examples.
-
-- **R2 – Few-Shot Chain-of-Thought with Persona**  
-  The prompt includes several solved exemplars with intermediate reasoning steps, combined with a persona-style instruction (e.g. “Act as a logical auditor”), introducing both structural templates and semantic guidance.
-
-- **R3 – Structured Self-Consistency**  
-  Multiple independent reasoning trajectories are sampled for the same prompt. Routing behaviour is analysed per trajectory and then averaged, allowing identification of experts that persist across redundant reasoning paths.
-
-These regimes are treated as **distinct empirical conditions**, not as a linear scale of reasoning strength.
+Both components are designed to mirror, in a simplified form, the faithfulness analysis pipeline
+used in the “Steering MoE via Expert Deactivation” paper.
 
 ---
 
-## Prompt Design
+## 1. Data Preparation and Formatting
 
-Prompts are **domain-agnostic** and selected using **structural criteria** rather than semantic categories (e.g. “math” or “logic”), to avoid domain-driven routing confounds.
+### Objective
 
-Each prompt is designed to require:
-- recurring entity definitions,
-- intermediate dependencies between steps,
-- implicit state tracking across the task.
+Construct a dataset of **(question, supporting document(s), answer)** triples from a **known
+grounded QA benchmark** and format it into prompts consumable by DeepSeek-V2-Lite.
 
-The same base prompts are used across all reasoning regimes to ensure that observed routing differences reflect changes in reasoning paradigm rather than surface-level formatting effects.
+### Pipeline
 
----
+- **Dataset selection**  
+  Use an existing QA dataset where each question is paired with one or more supporting passages and
+  a reference answer (e.g. open-domain QA or multi-hop QA). The specific dataset can be swapped
+  without changing the rest of the pipeline.
 
-## Sequence-Level Routing Profiles
+- **Canonical schema**  
+  Convert raw dataset entries into a unified internal format, for example:
+  - `question`: natural language question
+  - `documents`: list of supporting passages / snippets
+  - `answer`: gold/reference answer text
 
-During inference, the model’s token-level expert routing decisions are logged.  
-These token-level signals are then **aggregated across the full sequence** to produce a single routing profile per prompt, representing how often each expert was used during generation.
+- **Prompt construction**  
+  For each example, build at least two prompt variants:
+  - **No-document condition (Q-only)**: the model sees only the question.
+  - **Document condition (Q+Doc)**: the model sees the question together with one or more supporting
+    passages, formatted in an instruction style that clearly separates context from the question.
 
-Routing profiles are computed at the sequence level rather than the token level to avoid attributing reasoning significance to individual tokens.
+- **Serialisation**  
+  Save the resulting prompts (and pointers to the original QA metadata) into JSONL files under
+  `stage1/data/`, ready to be fed into the MoE model inference pipeline.
 
----
-
-## Aggregation by Reasoning Regime
-
-For each reasoning regime, routing profiles are averaged across all prompts to produce a **regime-level expert usage profile**.
-
-For the self-consistency regime (R3), routing profiles are computed separately for each generated reasoning trajectory and then averaged, enabling analysis of expert persistence across multiple independent reasoning paths.
-
----
-
-## Identifying Recurring Experts
-
-Stage 1 identifies experts that:
-- increase in usage relative to the zero-shot baseline,
-- do so **consistently across multiple reasoning regimes**, and
-- remain active across redundant reasoning trajectories under self-consistency.
-
-These experts are considered **recurring experts** and are ranked using recurrence-based metrics. Importantly, these rankings are descriptive and do not imply causal importance on their own.
+The output of this component is a clean, model-ready dataset that systematically contrasts
+**question-only** vs **question-plus-document** inputs for the same underlying QA examples.
 
 ---
 
-## Outputs of Stage 1
+## 2. Routing Trace Extraction and Expert Risk Difference
 
-Stage 1 produces:
+### Objective
 
-- A sequence-level routing profile for each prompt instance  
-- Average routing
+Analyse how the **Mixture-of-Experts router** in DeepSeek-V2-Lite responds to the presence or
+absence of supporting documents, and rank experts by a **risk-difference style measure** that
+captures this sensitivity.
+
+### Routing Trace Logging
+
+- Run DeepSeek-V2-Lite on the prepared prompts under two conditions:
+  - **Q-only** inputs (no supporting document)
+  - **Q+Doc** inputs (with supporting document)
+
+- For each forward pass, log the **token-level routing decisions**, including (depending on what
+  the model exposes):
+  - gate probabilities for each expert,
+  - which experts were selected (top-k routing),
+  - per-layer and per-token expert assignments.
+
+- Aggregate these token-level signals into **sequence-level expert activation summaries** for each
+  example and condition, such as:
+  - total/average gate mass per expert,
+  - proportion of tokens routed to each expert.
+
+### Risk Difference per Expert
+
+Using the aggregated routing summaries, compute for each expert a **risk-difference style score**
+that captures how much its activation changes when a supporting document is present:
+
+- For each example and expert, measure an activation statistic under:
+  - `A_with_doc`  – activation when the supporting document is provided
+  - `A_without_doc` – activation when the document is withheld
+
+- Define a **risk-difference style metric**, for example:
+  - `RD_expert = E[A_with_doc] - E[A_without_doc]` (averaged over examples)
+
+- Rank experts by `RD_expert` to identify:
+  - experts that **strongly increase** activation when a document is present (document-sensitive),
+  - experts that are largely **insensitive** to document presence.
+
+This ranking is the core Stage 1 output used to support later **expert deactivation / steering
+experiments**: high-risk-difference experts are natural candidates for intervention.
+
+---
+
+## Faithfulness Evaluation and Steering (Beyond Stage 1)
+
+While Stage 1 focuses on data preparation and routing analysis, the broader project goal is to
+adapt the “Steering MoE via Expert Deactivation” methodology to evaluate and improve faithfulness:
+
+- Use the Stage 1 expert rankings to select experts for **deactivation or down-weighting**.
+- Compare model outputs with and without these experts active under Q-only and Q+Doc conditions.
+- Measure how steering affects:
+  - **faithfulness**: alignment of model answers with the provided supporting documents,
+  - **hallucination rate**: tendency to produce unsupported or contradicted statements,
+  - **task performance**: accuracy/utility on the QA task.
+
+These later stages will be built on top of the Stage 1 outputs but are intentionally left flexible
+to allow iteration on evaluation metrics and steering strategies.
+
+---
+
+## Repository Layout (High-Level)
+
+The repository is organised as follows (subject to change as the project evolves):
+
+- `src/` – Core scripts for data preparation, model interaction, and analysis.
+- `stage1/` – Assets and scripts specific to Stage 1:
+  - `data/` – Processed QA + document prompts (JSONL) and related artefacts.
+  - `analysis/` – Intermediate routing summaries, expert rankings, and notebooks.
+  - `run/` – Logs, raw routing traces, and model outputs from DeepSeek-V2-Lite.
+- `docs/` – Project notes and extended documentation.
+- `tests/` – Unit tests and simple sanity checks for the pipeline.
+
+As the project develops, these folders will be refined, but the conceptual focus will remain on:
+**faithfulness evaluation and expert-based steering in MoE models**, following the SteerMoE
+approach.
 

@@ -20,6 +20,22 @@ on **document-grounded faithfulness** and **expert deactivation for steering**.
 
 ---
 
+## Getting Started
+
+To clone this repository, use one of the following commands:
+
+**HTTPS:**
+```bash
+git clone https://github.com/Johnwchampion/Individual-Project-25-26.git
+```
+
+**SSH:**
+```bash
+git clone git@github.com:Johnwchampion/Individual-Project-25-26.git
+```
+
+---
+
 ## High-Level Goals
 
 - Build a clean pipeline from a **known QA dataset with supporting documents** to a format suitable

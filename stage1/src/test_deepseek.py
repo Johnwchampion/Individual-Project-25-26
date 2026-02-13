@@ -20,6 +20,7 @@ model = AutoModelForCausalLM.from_pretrained(
 
 print("Model device:", next(model.parameters()).device)
 
+# Minimal prompt setup for a quick sanity check.
 cue = "You must answer using only the provided context."
 context = "Monotremes diverged 220 million years ago. Therians diverged 160 million years ago."
 question = "How many years ago did monotremes and therians diverge?"
@@ -35,20 +36,21 @@ input_text = tokenizer.apply_chat_template(
     add_generation_prompt=True
 )
 
-print("\n===== FORMATTED PROMPT =====\n")
+print("\nFormatted prompt\n")
 print(input_text)
 
 tokens = tokenizer.tokenize(input_text)
 token_ids = tokenizer.convert_tokens_to_ids(tokens)
 
-print("\n===== TOKENS =====\n")
+# Token inspection for troubleshooting.
+print("\nTokens\n------")
 for t in tokens:
     print(t)
 
-print("\n===== TOKEN IDS =====\n")
+print("\nToken IDs\n")
 print(token_ids)
 
-print("\n===== TOKEN ↔ ID PAIRS =====\n")
+print("\nToken/ID pairs\n")
 for t, i in zip(tokens, token_ids):
     print(f"{i} -> {t}")
 
@@ -62,9 +64,10 @@ model.config.use_cache = False
 print("\nRunning generation...")
 
 with torch.no_grad():
+    # Keep it deterministic for reproducible checks.
     outputs = model.generate(
         **inputs,
-        max_new_tokens=30,
+        max_new_tokens=100,
         do_sample=False,
         use_cache=False
     )
@@ -72,9 +75,10 @@ with torch.no_grad():
 generated_tokens = outputs[0][inputs["input_ids"].shape[-1]:]
 decoded = tokenizer.decode(generated_tokens, skip_special_tokens=True)
 
-print("\n===== GENERATED OUTPUT =====\n")
+print("\nGenerated output\n")
 print(decoded.strip())
 
+# Quick GPU memory snapshot after generation.
 print("\nMemory allocated (GB):", torch.cuda.memory_allocated() / 1e9)
 print("Memory reserved (GB):", torch.cuda.memory_reserved() / 1e9)
 

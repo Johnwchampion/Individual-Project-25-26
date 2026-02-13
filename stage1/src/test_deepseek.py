@@ -1,6 +1,10 @@
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
+
+# Model setup
+
+
 model_name = "deepseek-ai/DeepSeek-V2-Lite"
 
 print("CUDA available:", torch.cuda.is_available())
@@ -20,65 +24,85 @@ model = AutoModelForCausalLM.from_pretrained(
 
 print("Model device:", next(model.parameters()).device)
 
-# Minimal prompt setup for a quick sanity check.
+
+# Prompt (NO chat template)
+
+
 cue = "You must answer using only the provided context."
 context = "Monotremes diverged 220 million years ago. Therians diverged 160 million years ago."
 question = "How many years ago did monotremes and therians diverge?"
 
-messages = [
-    {"role": "system", "content": cue},
-    {"role": "user", "content": f"Context:\n{context}\n\nQuestion:\n{question}"}
-]
+input_text = f"""
+{cue}
 
-input_text = tokenizer.apply_chat_template(
-    messages,
-    tokenize=False,
-    add_generation_prompt=True
-)
+Context:
+{context}
+
+Question:
+{question}
+
+Answer:
+""".strip()
 
 print("\nFormatted prompt\n")
 print(input_text)
 
-tokens = tokenizer.tokenize(input_text)
-token_ids = tokenizer.convert_tokens_to_ids(tokens)
 
-# Token inspection for troubleshooting.
-print("\nTokens\n------")
-for t in tokens:
-    print(t)
+# Tokenisation
 
-print("\nToken IDs\n")
-print(token_ids)
-
-print("\nToken/ID pairs\n")
-for t, i in zip(tokens, token_ids):
-    print(f"{i} -> {t}")
 
 inputs = tokenizer(
     input_text,
     return_tensors="pt"
 ).to(model.device)
 
+print("\nInput length (tokens):", inputs["input_ids"].shape[-1])
+
+# Disable KV cache (consistent with routing analysis setup)
 model.config.use_cache = False
+
+
+# Generation
+
 
 print("\nRunning generation...")
 
 with torch.no_grad():
-    # Keep it deterministic for reproducible checks.
     outputs = model.generate(
         **inputs,
-        max_new_tokens=100,
-        do_sample=False,
+        max_new_tokens=40,                     # short factual answer cap
+        do_sample=False,                       # deterministic
+        eos_token_id=tokenizer.eos_token_id,
+        pad_token_id=tokenizer.eos_token_id,
         use_cache=False
     )
 
-generated_tokens = outputs[0][inputs["input_ids"].shape[-1]:]
-decoded = tokenizer.decode(generated_tokens, skip_special_tokens=True)
+
+# Clean output extraction
+
+
+input_length = inputs["input_ids"].shape[-1]
+generated_ids = outputs[0][input_length:]
+
+raw_text = tokenizer.decode(
+    generated_ids,
+    skip_special_tokens=True
+)
+
+# Hard stop at first newline
+cleaned_text = raw_text.split("\n")[0].strip()
+
+# Additional safeguard against role leakage
+for stop_word in ["User:", "Assistant:"]:
+    if stop_word in cleaned_text:
+        cleaned_text = cleaned_text.split(stop_word)[0].strip()
 
 print("\nGenerated output\n")
-print(decoded.strip())
+print(cleaned_text)
 
-# Quick GPU memory snapshot after generation.
+
+# GPU Memory Snapshot
+
+
 print("\nMemory allocated (GB):", torch.cuda.memory_allocated() / 1e9)
 print("Memory reserved (GB):", torch.cuda.memory_reserved() / 1e9)
-

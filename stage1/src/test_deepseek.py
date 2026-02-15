@@ -1,38 +1,48 @@
+import os
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
+# ---------------------------
+# Cache setup (SAFE location)
+# ---------------------------
 
+cache_dir = "/scratch/sc23jc3/cache"
+os.makedirs(cache_dir, exist_ok=True)
+
+# ---------------------------
 # Model setup
+# ---------------------------
 
-
-model_name = "deepseek-ai/DeepSeek-V2-Lite"
+model_name = "deepseek-ai/DeepSeek-V2-Lite-Chat"
 
 print("CUDA available:", torch.cuda.is_available())
 print("Device count:", torch.cuda.device_count())
 
 tokenizer = AutoTokenizer.from_pretrained(
     model_name,
-    trust_remote_code=True
+    trust_remote_code=True,
+    cache_dir=cache_dir
 )
 
 model = AutoModelForCausalLM.from_pretrained(
     model_name,
-    torch_dtype=torch.float16,
-    device_map={"": 0},
-    trust_remote_code=True
+    dtype=torch.float16,          # updated (torch_dtype deprecated)
+    device_map="auto",
+    trust_remote_code=True,
+    cache_dir=cache_dir
 )
 
 print("Model device:", next(model.parameters()).device)
 
 
-# Prompt (NO chat template)
+# Proper chat formatting
 
 
 cue = "You must answer using only the provided context."
 context = "Monotremes diverged 220 million years ago. Therians diverged 160 million years ago."
 question = "How many years ago did monotremes and therians diverge?"
 
-input_text = f"""
+user_prompt = f"""
 {cue}
 
 Context:
@@ -40,69 +50,64 @@ Context:
 
 Question:
 {question}
-
-Answer:
 """.strip()
 
-print("\nFormatted prompt\n")
-print(input_text)
+messages = [
+    {"role": "user", "content": user_prompt}
+]
 
-
-# Tokenisation
-
-
-inputs = tokenizer(
-    input_text,
-    return_tensors="pt"
+inputs = tokenizer.apply_chat_template(
+    messages,
+    return_tensors="pt",
+    add_generation_prompt=True
 ).to(model.device)
 
-print("\nInput length (tokens):", inputs["input_ids"].shape[-1])
+print("\nFormatted prompt\n")
+print(user_prompt)
+print("\nInput length (tokens):", inputs.shape[-1])
 
-# Disable KV cache (consistent with routing analysis setup)
+# Disable KV cache (consistent with routing experiments)
 model.config.use_cache = False
 
 
 # Generation
 
 
-print("\nRunning generation...")
+print("\nRunning generation...\n")
 
 with torch.no_grad():
     outputs = model.generate(
-        **inputs,
-        max_new_tokens=40,                     # short factual answer cap
-        do_sample=False,                       # deterministic
-        eos_token_id=tokenizer.eos_token_id,
-        pad_token_id=tokenizer.eos_token_id,
+        inputs,
+        max_new_tokens=50,
+        do_sample=False,          # deterministic
         use_cache=False
     )
 
 
-# Clean output extraction
+# Decode full output
 
 
-input_length = inputs["input_ids"].shape[-1]
-generated_ids = outputs[0][input_length:]
+decoded = tokenizer.decode(outputs[0], skip_special_tokens=True)
 
-raw_text = tokenizer.decode(
-    generated_ids,
-    skip_special_tokens=True
-)
-
-# Hard stop at first newline
-cleaned_text = raw_text.split("\n")[0].strip()
-
-# Additional safeguard against role leakage
-for stop_word in ["User:", "Assistant:"]:
-    if stop_word in cleaned_text:
-        cleaned_text = cleaned_text.split(stop_word)[0].strip()
-
-print("\nGenerated output\n")
-print(cleaned_text)
+print("===== FULL MODEL OUTPUT =====\n")
+print(decoded)
+print("\n=============================\n")
 
 
-# GPU Memory Snapshot
+#Print tokens and their token ids, with clear correspondence to the decoded output
+print("===== TOKENIZED INPUT =====\n")
+input_tokens = tokenizer.convert_ids_to_tokens(inputs[0].tolist())
+for i, (token, token_id) in enumerate(zip(input_tokens, inputs[0].tolist())):
+    print(f"Token {i}: '{token}' (ID: {token_id})")
+print("\n===== TOKENIZED OUTPUT =====\n")
+output_tokens = tokenizer.convert_ids_to_tokens(outputs[0].tolist())
+for i, (token, token_id) in enumerate(zip(output_tokens, outputs[0].tolist())):
+    print(f"Token {i}: '{token}' (ID: {token_id})")
+print("\n=============================\n")
 
 
-print("\nMemory allocated (GB):", torch.cuda.memory_allocated() / 1e9)
-print("Memory reserved (GB):", torch.cuda.memory_reserved() / 1e9)
+# GPU memory snapshot
+
+
+print("Memory allocated (GB):", torch.cuda.memory_allocated() / 1e9)
+print("Memory reserved  (GB):", torch.cuda.memory_reserved() / 1e9)

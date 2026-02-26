@@ -1,163 +1,198 @@
-# Measuring and Steering Faithfulness in Mixture-of-Experts Language Models via Expert Deactivation
+# Measuring and Steering Faithfulness and Safety in Mixture-of-Experts Language Models via Expert Deactivation
 
 ## Overview
 
 This repository contains the research codebase for my Individual Project (2025/26).
 
 The project follows the direction of **“Steering MoE via Expert Deactivation”**, focusing on
-**faithfulness evaluation and steering** in mixture-of-experts (MoE) language models. The central
-idea is to:
+**faithfulness and safety evaluation and steering** in mixture-of-experts (MoE) language models.
 
-- work with a **grounded QA dataset** containing questions, supporting documents, and answers,
-- measure how **expert routing** in a MoE model (e.g. DeepSeek-V2-Lite) changes when evidence
-  documents are present vs absent, and
-- use this to identify and later steer experts whose activation patterns are tied to faithful vs
-  unfaithful (hallucinated) behaviour.
+The central idea is to:
 
-The project is now significantly simpler than the initial design: it does **not** study multiple
-reasoning regimes, explicit reasoning traces, or expert “reasoning profiles”. Instead, it focuses
-on **document-grounded faithfulness** and **expert deactivation for steering**.
+- construct controlled behavioural contrasts,
+- measure how **expert routing** in a MoE model (e.g. DeepSeek-V2-Lite) changes across these regimes, and
+- identify experts whose activation patterns are systematically associated with:
+  - document-grounded vs ungrounded behaviour (faithfulness),
+  - safe vs unsafe behaviour (safety alignment).
 
----
+The project studies two orthogonal behavioural axes:
 
-## High-Level Goals
+1. **Document-grounded faithfulness**
+2. **Safety alignment (harmful compliance vs refusal)**
 
-- Build a clean pipeline from a **known QA dataset with supporting documents** to a format suitable
-  for DeepSeek-V2-Lite.
-- Log **expert routing traces** for different input conditions (with and without supporting
-  documents).
-- Compute a **risk-difference style metric** per expert that captures how strongly its activation
-  depends on the presence of the supporting document.
-- Identify experts that are most sensitive to document presence and thus promising candidates for
-  later **expert deactivation / steering**.
-- Evaluate how steering these experts affects **faithfulness** (groundedness to the supplied
-  documents) and **task performance**.
+Rather than modelling reasoning traces or expert “reasoning profiles”, the focus is on
+**behavioural contrasts and routing sensitivity**, following a simplified and controlled
+adaptation of the SteerMoE methodology.
 
 ---
 
-# Stage 1: Data Pipeline and Expert Routing Analysis
+# High-Level Goals
 
-Stage 1 replaces the earlier “reasoning regime” work. It has two main components:
-
-1. **Data preparation and formatting for DeepSeek-V2-Lite**
-2. **Routing trace extraction and expert risk-difference ranking**
-
-Both components are designed to mirror, in a simplified form, the faithfulness analysis pipeline
-used in the “Steering MoE via Expert Deactivation” paper.
-
----
-
-## 1. Data Preparation and Formatting
-
-### Objective
-
-Construct a dataset of **(question, supporting document(s), answer)** triples from a **known
-grounded QA benchmark** and format it into prompts consumable by DeepSeek-V2-Lite.
-
-### Pipeline
-
-- **Dataset selection**  
-  Use an existing QA dataset where each question is paired with one or more supporting passages and
-  a reference answer (e.g. open-domain QA or multi-hop QA). The specific dataset can be swapped
-  without changing the rest of the pipeline.
-
-- **Canonical schema**  
-  Convert raw dataset entries into a unified internal format, for example:
-  - `question`: natural language question
-  - `documents`: list of supporting passages / snippets
-  - `answer`: gold/reference answer text
-
-- **Prompt construction**  
-  For each example, build at least two prompt variants:
-  - **No-document condition (Q-only)**: the model sees only the question.
-  - **Document condition (Q+Doc)**: the model sees the question together with one or more supporting
-    passages, formatted in an instruction style that clearly separates context from the question.
-
-- **Serialisation**  
-  Save the resulting prompts (and pointers to the original QA metadata) into JSONL files under
-  `stage1/data/`, ready to be fed into the MoE model inference pipeline.
-
-The output of this component is a clean, model-ready dataset that systematically contrasts
-**question-only** vs **question-plus-document** inputs for the same underlying QA examples.
+- Build clean pipelines for:
+  - a **grounded QA dataset** (faithfulness axis),
+  - a **safety contrast dataset** (unsafe vs safe completions).
+- Log **expert routing traces** in DeepSeek-V2-Lite under controlled input conditions.
+- Compute a **risk-difference style metric** per expert that captures behavioural sensitivity.
+- Identify experts strongly associated with:
+  - document-conditioned activation,
+  - safety-aligned refusal behaviour.
+- Evaluate how steering these experts affects:
+  - faithfulness,
+  - safety,
+  - task performance.
 
 ---
 
-## 2. Routing Trace Extraction and Expert Risk Difference
+# Stage 1: Behavioural Data Pipelines and Expert Routing Analysis
 
-### Objective
+Stage 1 consists of two parallel pipelines:
 
-Analyse how the **Mixture-of-Experts router** in DeepSeek-V2-Lite responds to the presence or
-absence of supporting documents, and rank experts by a **risk-difference style measure** that
-captures this sensitivity.
+1. **Faithfulness Pipeline (Document Sensitivity)**
+2. **Safety Pipeline (Alignment Sensitivity)**
 
-### Routing Trace Logging
-
-- Run DeepSeek-V2-Lite on the prepared prompts under two conditions:
-  - **Q-only** inputs (no supporting document)
-  - **Q+Doc** inputs (with supporting document)
-
-- For each forward pass, log the **token-level routing decisions**, including (depending on what
-  the model exposes):
-  - gate probabilities for each expert,
-  - which experts were selected (top-k routing),
-  - per-layer and per-token expert assignments.
-
-- Aggregate these token-level signals into **sequence-level expert activation summaries** for each
-  example and condition, such as:
-  - total/average gate mass per expert,
-  - proportion of tokens routed to each expert.
-
-### Risk Difference per Expert
-
-Using the aggregated routing summaries, compute for each expert a **risk-difference style score**
-that captures how much its activation changes when a supporting document is present:
-
-- For each example and expert, measure an activation statistic under:
-  - `A_with_doc`  – activation when the supporting document is provided
-  - `A_without_doc` – activation when the document is withheld
-
-- Define a **risk-difference style metric**, for example:
-  - `RD_expert = E[A_with_doc] - E[A_without_doc]` (averaged over examples)
-
-- Rank experts by `RD_expert` to identify:
-  - experts that **strongly increase** activation when a document is present (document-sensitive),
-  - experts that are largely **insensitive** to document presence.
-
-This ranking is the core Stage 1 output used to support later **expert deactivation / steering
-experiments**: high-risk-difference experts are natural candidates for intervention.
+Both pipelines feed into a shared routing analysis framework.
 
 ---
 
-## Faithfulness Evaluation and Steering (Beyond Stage 1)
+# Faithfulness Axis: Document-Grounded QA
 
-While Stage 1 focuses on data preparation and routing analysis, the broader project goal is to
-adapt the “Steering MoE via Expert Deactivation” methodology to evaluate and improve faithfulness:
+## Objective
 
-- Use the Stage 1 expert rankings to select experts for **deactivation or down-weighting**.
-- Compare model outputs with and without these experts active under Q-only and Q+Doc conditions.
-- Measure how steering affects:
-  - **faithfulness**: alignment of model answers with the provided supporting documents,
-  - **hallucination rate**: tendency to produce unsupported or contradicted statements,
-  - **task performance**: accuracy/utility on the QA task.
+Measure how expert routing changes when supporting evidence documents are present vs absent.
 
-These later stages will be built on top of the Stage 1 outputs but are intentionally left flexible
-to allow iteration on evaluation metrics and steering strategies.
+## Data Preparation
+
+- Use a grounded QA benchmark with:
+  - `question`
+  - `supporting document(s)`
+  - `reference answer`
+- Construct two prompt variants per example:
+  - **Q-only condition**
+  - **Q+Doc condition**
+- Serialize prompts into JSONL format for model consumption.
+
+## Routing Trace Extraction
+
+For each condition:
+
+- Run DeepSeek-V2-Lite under teacher forcing.
+- Log token-level routing decisions:
+  - selected experts (top-k),
+  - gate mass,
+  - per-layer assignments.
+- Aggregate to sequence-level expert statistics.
+
+## Risk Difference (Faithfulness)
+
+For each expert:
+
+- Compute activation under:
+  - `A_with_doc`
+  - `A_without_doc`
+- Define:
+
+  `RD_faithfulness = E[A_with_doc] - E[A_without_doc]`
+
+Experts with high positive RD are document-sensitive and candidates for steering.
 
 ---
 
-## Repository Layout (High-Level)
+# Safety Axis: Unsafe vs Safe Behaviour
 
-The repository is organised as follows (subject to change as the project evolves):
+## Objective
 
-- `src/` – Core scripts for data preparation, model interaction, and analysis.
-- `stage1/` – Assets and scripts specific to Stage 1:
-  - `data/` – Processed QA + document prompts (JSONL) and related artefacts.
-  - `analysis/` – Intermediate routing summaries, expert rankings, and notebooks.
-  - `run/` – Logs, raw routing traces, and model outputs from DeepSeek-V2-Lite.
-- `docs/` – Project notes and extended documentation.
-- `tests/` – Unit tests and simple sanity checks for the pipeline.
+Measure how expert routing differs between:
 
-As the project develops, these folders will be refined, but the conceptual focus will remain on:
-**faithfulness evaluation and expert-based steering in MoE models**, following the SteerMoE
-approach.
+- **Unsafe completions** (harmful compliance),
+- **Safe refusals** (alignment behaviour).
 
+## Dataset Construction
+
+For each unsafe prompt:
+
+- Use a dataset containing harmful or policy-violating completions.
+- Construct paired examples:
+  - `unsafe`: original harmful completion,
+  - `safe`: model-generated refusal-style completion.
+
+Safe responses are:
+
+- context-aware,
+- explanatory,
+- length-comparable,
+- non-actionable.
+
+Both safe and unsafe responses are treated as fixed sequences for analysis.
+
+## Routing Measurement
+
+For each pair:
+
+- Run teacher-forced forward passes on:
+  - `User + Unsafe Assistant`
+  - `User + Safe Assistant`
+- Extract routing only over assistant response tokens.
+- Optionally length-match at measurement time:
+  - use `K = min(L_safe, L_unsafe)` tokens.
+
+## Risk Difference (Safety)
+
+For each expert:
+
+- Compute:
+
+  `RD_safety = E[A_safe] - E[A_unsafe]`
+
+Experts with high positive RD_safety are associated with refusal/alignment behaviour.
+Experts with negative RD_safety are associated with harmful compliance.
+
+---
+
+# Steering via Expert Deactivation
+
+After identifying high-risk-difference experts:
+
+- Perform selective expert deactivation or down-weighting.
+- Evaluate behavioural impact on:
+  - grounded QA tasks (faithfulness),
+  - unsafe prompts (safety compliance),
+  - overall model utility.
+
+Evaluation metrics may include:
+
+- Answer correctness
+- Groundedness to supplied documents
+- Hallucination rate
+- Safety refusal rate
+- Task performance degradation
+
+---
+
+# Repository Layout
+
+```
+src/                Core scripts (model loading, routing hooks, metrics)
+stage1/
+  data/             Processed QA and safety datasets (JSONL)
+  analysis/         Expert rankings, routing summaries, notebooks
+  run/              Raw routing traces and logs
+docs/               Project notes and extended documentation
+tests/              Unit tests and sanity checks
+```
+
+---
+
+# Conceptual Summary
+
+This project investigates whether specific experts in a Mixture-of-Experts language model:
+
+- specialize in document-grounded reasoning,
+- specialize in safety-aligned refusal behaviour,
+- and can be selectively steered via expert deactivation.
+
+By analysing routing sensitivity across controlled behavioural contrasts,
+the project extends the SteerMoE framework to jointly study:
+
+- **faithfulness**
+- **safety**
+- **expert-level interpretability and steering**

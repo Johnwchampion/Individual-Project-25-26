@@ -2,16 +2,12 @@ import os
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
-# ---------------------------
 # Cache setup (SAFE location)
-# ---------------------------
 
 cache_dir = "/scratch/sc23jc3/cache"
 os.makedirs(cache_dir, exist_ok=True)
 
-# ---------------------------
 # Model setup
-# ---------------------------
 
 model_name = "deepseek-ai/DeepSeek-V2-Lite-Chat"
 

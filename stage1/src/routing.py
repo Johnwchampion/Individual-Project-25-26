@@ -54,9 +54,7 @@ class RouterTracer:
             hook.remove()
         self._hooks.clear()
 
-    # -------------------------
     # Hook attachment (clean)
-    # -------------------------
 
     def _attach_hooks(self) -> None:
         """
@@ -89,9 +87,7 @@ class RouterTracer:
             return getattr(self._model, "model")
         raise RuntimeError("Unexpected model structure: top-level model missing .model")
 
-    # -------------------------
     # Hook + extraction
-    # -------------------------
 
     def _make_hook(self, layer_name: str):
         def hook(_module: torch.nn.Module, _inputs: Tuple[Any, ...], outputs: Any) -> None:

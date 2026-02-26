@@ -3,17 +3,13 @@ import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
 
-# -------------------------
 # CONFIG (hard-coded)
-# -------------------------
 
 MODEL_NAME = "deepseek-ai/DeepSeek-V2-Lite-Chat"
 CACHE_DIR = "/scratch/sc23jc3/cache"
 
 
-# -------------------------
 # Load model
-# -------------------------
 
 os.makedirs(CACHE_DIR, exist_ok=True)
 
@@ -34,9 +30,7 @@ model = AutoModelForCausalLM.from_pretrained(
 model.config.use_cache = False
 
 
-# -------------------------
 # Hook logic (string filter)
-# -------------------------
 
 layer_traces = {}
 hooks = []
@@ -89,9 +83,7 @@ for name, module in model.named_modules():
         hooks.append(hook)
 
 
-# -------------------------
 # Run small generation
-# -------------------------
 
 messages = [
     {"role": "user", "content": "Explain briefly what a mixture of experts model is."}
@@ -112,9 +104,7 @@ with torch.no_grad():
     )
 
 
-# -------------------------
 # Print results
-# -------------------------
 
 for layer, events in layer_traces.items():
     print(f"\nLayer: {layer}")

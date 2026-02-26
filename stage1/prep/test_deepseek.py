@@ -95,11 +95,8 @@ print("\n=============================\n")
 
 
 #Print tokens and their token ids, with clear correspondence to the decoded output
-print("===== TOKENIZED INPUT =====\n")
-input_tokens = tokenizer.convert_ids_to_tokens(inputs[0].tolist())
-for i, (token, token_id) in enumerate(zip(input_tokens, inputs[0].tolist())):
-    print(f"Token {i}: '{token}' (ID: {token_id})")
-print("\n===== TOKENIZED OUTPUT =====\n")
+
+print("\n===== TOKENIZED =====\n")
 output_tokens = tokenizer.convert_ids_to_tokens(outputs[0].tolist())
 for i, (token, token_id) in enumerate(zip(output_tokens, outputs[0].tolist())):
     print(f"Token {i}: '{token}' (ID: {token_id})")

@@ -92,3 +92,50 @@ def sample_pairs(pairs: List[ChatPair], n: int) -> List[ChatPair]:
 	if n == len(pairs):
 		return list(pairs)
 	return pairs[:n]
+
+
+# ---------------------------------------------------------------------------
+# Safety pipeline types and loaders
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class SafetyPair:
+	base_id: str
+	unsafe: ChatRecord
+	safe: ChatRecord
+
+
+def group_into_safety_pairs(records: List[ChatRecord]) -> List[SafetyPair]:
+	"""
+	Group alternating unsafe/safe ChatRecords into SafetyPair objects.
+
+	Expects records in strict interleaved order: unsafe, safe, unsafe, safe, ...
+	This matches the output format of prepare_safedata.py, which writes an
+	unsafe record immediately followed by its paired safe record for the same prompt.
+	"""
+	if len(records) % 2 != 0:
+		raise ValueError("Record count must be even for safety pair grouping.")
+
+	pairs: List[SafetyPair] = []
+	for i in range(0, len(records), 2):
+		unsafe_rec = records[i]
+		safe_rec = records[i + 1]
+
+		if unsafe_rec.condition != "unsafe":
+			raise ValueError(
+				f"Expected 'unsafe' at index {i}, got '{unsafe_rec.condition}'"
+			)
+		if safe_rec.condition != "safe":
+			raise ValueError(
+				f"Expected 'safe' at index {i + 1}, got '{safe_rec.condition}'"
+			)
+
+		pairs.append(
+			SafetyPair(
+				base_id=unsafe_rec.id.rsplit("_", 1)[0],
+				unsafe=unsafe_rec,
+				safe=safe_rec,
+			)
+		)
+
+	return pairs

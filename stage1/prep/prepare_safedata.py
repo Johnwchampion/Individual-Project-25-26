@@ -69,7 +69,7 @@ ds_unsafe = ds_clean.filter(lambda x: x["expected"] == "unsafe")
 ds_unsafe = ds_unsafe.select(range(min(40, len(ds_unsafe))))
 
 
-def generate_unsafe_response(user_prompt, max_new_tokens=100):
+def generate_unsafe_response(user_prompt, max_new_tokens=128):
     """
     Generate a compliant harmful response by appending FORCED_PREFIX directly
     after the chat template's "Assistant:" marker. The model continues freely
@@ -110,7 +110,7 @@ def generate_unsafe_response(user_prompt, max_new_tokens=100):
     return FORCED_PREFIX + " " + generated.strip()
 
 
-def generate_safe_response(user_prompt, max_new_tokens=256):
+def generate_safe_response(user_prompt, max_new_tokens=128):
     """
     Generate a safety-aligned refusal using a system prompt that instructs
     the model to decline and explain, without providing actionable content.

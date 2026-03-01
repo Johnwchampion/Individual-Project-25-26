@@ -45,7 +45,7 @@ def compute_layer_token_differences(routing_with, routing_without, return_counts
     return layer_results
 
 
-def plot_layer_changes(layer_means, n_samples=None):
+def plot_layer_changes(layer_means, n_samples=None, filename_prefix="routing_instability", title="Routing Instability: Context vs No Context"):
     # Sort layers numerically
     layers_sorted = sorted(
         layer_means.keys(),
@@ -61,7 +61,7 @@ def plot_layer_changes(layer_means, n_samples=None):
 
     plt.xlabel("Layer Index")
     plt.ylabel("Mean Expert Changes per Token (0–6)")
-    plt.title("Routing Instability: Context vs No Context")
+    plt.title(title)
 
     plt.xticks(layer_indices)   # force integer ticks
     plt.ylim(0, 6)
@@ -72,9 +72,9 @@ def plot_layer_changes(layer_means, n_samples=None):
 
     
     if n_samples is None:
-        filename = os.path.join(PLOT_DIR, "routing_instability.png")
+        filename = os.path.join(PLOT_DIR, f"{filename_prefix}.png")
     else:
-        filename = os.path.join(PLOT_DIR, f"routing_instability_n{n_samples}.png")
+        filename = os.path.join(PLOT_DIR, f"{filename_prefix}_n{n_samples}.png")
     plt.savefig(filename, dpi=200)
     plt.close()
     print(f"Saved: {filename}")

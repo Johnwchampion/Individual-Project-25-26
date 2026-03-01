@@ -1,5 +1,6 @@
 import torch
 import random
+import argparse
 import config as cfg
 from dataset import load_jsonl, group_into_pairs, sample_pairs, group_into_safety_pairs
 from model import load_model, generate
@@ -7,7 +8,9 @@ from routing import RouterTracer
 from collections import defaultdict
 from visualize import (
     accumulate_expert_counts,
+    compute_layer_token_differences,
     compute_rd,
+    plot_layer_changes,
     rank_positive_rd,
     rank_negative_rd,
 )
@@ -73,6 +76,8 @@ def main():
     count_without = {}
     tokens_with = defaultdict(int)
     tokens_without = defaultdict(int)
+    diff_sum_by_layer = defaultdict(int)
+    diff_tokens_by_layer = defaultdict(int)
 
     # Iterate over pairs
     for idx, pair in enumerate(sampled_pairs, start=1):
@@ -141,6 +146,16 @@ def main():
             trace_without, start_idx_without, end_idx_without, top_k=6
         )
 
+        diff_counts = compute_layer_token_differences(
+            question_routing,
+            question_routing_without,
+            return_counts=True,
+        )
+
+        for layer, (diff_sum, token_count) in diff_counts.items():
+            diff_sum_by_layer[layer] += int(diff_sum)
+            diff_tokens_by_layer[layer] += int(token_count)
+
         accumulate_expert_counts(question_routing, count_with, tokens_with)
         accumulate_expert_counts(question_routing_without, count_without, tokens_without)
 
@@ -152,14 +167,22 @@ def main():
     )
 
     print(f"Computed RD for {len(rd_by_layer)} layers")
+    layer_means = {
+        layer: (diff_sum_by_layer[layer] / diff_tokens_by_layer[layer])
+        for layer in diff_sum_by_layer
+        if diff_tokens_by_layer[layer] > 0
+    }
+    if layer_means:
+        plot_layer_changes(
+            layer_means,
+            n_samples=len(sampled_pairs),
+            filename_prefix="routing_instability_faithfulness",
+            title="Routing Instability: With Context vs No Context",
+        )
     rank_positive_rd(rd_by_layer)
     rank_negative_rd(rd_by_layer)
 
     print("\nFinished all pairs")
-
-
-if __name__ == "__main__":
-    main()
 
 
 # ===========================================================================
@@ -233,6 +256,8 @@ def run_safety():
     count_unsafe  = {}
     tokens_safe   = defaultdict(int)
     tokens_unsafe = defaultdict(int)
+    diff_sum_by_layer = defaultdict(int)
+    diff_tokens_by_layer = defaultdict(int)
 
     skipped = 0
 
@@ -292,6 +317,16 @@ def run_safety():
             trace_safe, safe_start, safe_start + K
         )
 
+        diff_counts = compute_layer_token_differences(
+            routing_safe,
+            routing_unsafe,
+            return_counts=True,
+        )
+
+        for layer, (diff_sum, token_count) in diff_counts.items():
+            diff_sum_by_layer[layer] += int(diff_sum)
+            diff_tokens_by_layer[layer] += int(token_count)
+
         accumulate_expert_counts(routing_unsafe, count_unsafe, tokens_unsafe)
         accumulate_expert_counts(routing_safe,   count_safe,   tokens_safe)
 
@@ -308,7 +343,38 @@ def run_safety():
     )
 
     print(f"Computed RD for {len(rd_by_layer)} layers")
+    layer_means = {
+        layer: (diff_sum_by_layer[layer] / diff_tokens_by_layer[layer])
+        for layer in diff_sum_by_layer
+        if diff_tokens_by_layer[layer] > 0
+    }
+    if layer_means:
+        plot_layer_changes(
+            layer_means,
+            n_samples=(len(pairs) - skipped),
+            filename_prefix="routing_instability_safety",
+            title="Routing Instability: Safe Refusal vs Unsafe Compliance",
+        )
     rank_positive_rd(rd_by_layer)
     rank_negative_rd(rd_by_layer)
 
     print("\nFinished all safety pairs")
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--mode",
+        choices=["faith", "safety", "both"],
+        default="both",
+        help="Which pipeline to run",
+    )
+    args = parser.parse_args()
+
+    if args.mode == "faith":
+        main()
+    elif args.mode == "safety":
+        run_safety()
+    else:
+        main()
+        run_safety()

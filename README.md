@@ -4,13 +4,13 @@
 
 This repository contains the research codebase for my Individual Project (2025/26).
 
-The project follows the direction of **“Steering MoE via Expert Deactivation”**, focusing on
+The project follows the direction of **"Steering MoE via Expert Deactivation"**, focusing on
 **faithfulness and safety evaluation and steering** in mixture-of-experts (MoE) language models.
 
 The central idea is to:
 
 - construct controlled behavioural contrasts,
-- measure how **expert routing** in a MoE model (e.g. DeepSeek-V2-Lite) changes across these regimes, and
+- measure how **expert routing** in a MoE model (DeepSeek-V2-Lite) changes across these regimes, and
 - identify experts whose activation patterns are systematically associated with:
   - document-grounded vs ungrounded behaviour (faithfulness),
   - safe vs unsafe behaviour (safety alignment).
@@ -20,9 +20,7 @@ The project studies two orthogonal behavioural axes:
 1. **Document-grounded faithfulness**
 2. **Safety alignment (harmful compliance vs refusal)**
 
-Rather than modelling reasoning traces or expert “reasoning profiles”, the focus is on
-**behavioural contrasts and routing sensitivity**, following a simplified and controlled
-adaptation of the SteerMoE methodology.
+The focus is on **behavioural contrasts and routing sensitivity**, following a simplified and controlled adaptation of the SteerMoE methodology.
 
 ---
 
@@ -47,8 +45,8 @@ adaptation of the SteerMoE methodology.
 
 Stage 1 consists of two parallel pipelines:
 
-1. **Faithfulness Pipeline (Document Sensitivity)**
-2. **Safety Pipeline (Alignment Sensitivity)**
+1. **Faithfulness Pipeline** — document-sensitive routing analysis using SQuAD
+2. **Safety Pipeline** — alignment-sensitive routing analysis using BeaverTails
 
 Both pipelines feed into a shared routing analysis framework.
 
@@ -56,95 +54,77 @@ Both pipelines feed into a shared routing analysis framework.
 
 # Faithfulness Axis: Document-Grounded QA
 
-## Objective
+## Dataset
 
-Measure how expert routing changes when supporting evidence documents are present vs absent.
+- Source: `decodingchris/clean_squad_v2` (SQuAD v2)
+- Prepared by: `stage1/prep/prepare_faithdata.py`
+- Output: `/scratch/sc23jc3/squad_prepared/squad_chat_formatted.jsonl`
 
-## Data Preparation
+Each example is serialised into **two chat-formatted records**:
+- `with_context` — system prompt + context document + question
+- `no_context` — system prompt + question only
 
-- Use a grounded QA benchmark with:
-  - `question`
-  - `supporting document(s)`
-  - `reference answer`
-- Construct two prompt variants per example:
-  - **Q-only condition**
-  - **Q+Doc condition**
-- Serialize prompts into JSONL format for model consumption.
+Records are paired by a shared base ID (`squad_XXXXXX_ctx` / `squad_XXXXXX_base`).
 
-## Routing Trace Extraction
+## Routing Analysis
 
-For each condition:
-
-- Run DeepSeek-V2-Lite under teacher forcing.
-- Log token-level routing decisions:
-  - selected experts (top-k),
-  - gate mass,
-  - per-layer assignments.
-- Aggregate to sequence-level expert statistics.
+- Orchestrated by: `stage1/src/run_stage1.py`
+- Samples up to 500 pairs; runs teacher-forced forward passes for each condition.
+- Uses `RouterTracer` to hook DeepSeek's MoE gate modules (`model.layers.X.mlp.gate`) and capture top-6 expert indices per layer per token.
+- Routing is sliced to **question tokens only** using subsequence matching, isolating the signal from padding and system tokens.
 
 ## Risk Difference (Faithfulness)
 
-For each expert:
+For each expert `e` at each layer:
 
-- Compute activation under:
-  - `A_with_doc`
-  - `A_without_doc`
-- Define:
+```
+RD_faithfulness(e) = P(e activated | with_context) - P(e activated | no_context)
+```
 
-  `RD_faithfulness = E[A_with_doc] - E[A_without_doc]`
-
-Experts with high positive RD are document-sensitive and candidates for steering.
+High positive RD → expert is document-sensitive (candidate for faithfulness steering).
+Negative RD → expert is suppressed by context.
 
 ---
 
 # Safety Axis: Unsafe vs Safe Behaviour
 
-## Objective
+## Dataset
 
-Measure how expert routing differs between:
+- Source: `innodatalabs/rt2-beavertails-simple` (BeaverTails)
+- Prepared by: `stage1/prep/prepare_safedata.py`
+- Output: `/scratch/sc23jc3/beavertails_prepared/beavertails_safety_pairs.jsonl`
 
-- **Unsafe completions** (harmful compliance),
-- **Safe refusals** (alignment behaviour).
+The pipeline:
+1. Filters for examples with a real user/assistant exchange (messages at index 3 and 4).
+2. Keeps only examples labelled `expected == "unsafe"` (up to 40).
+3. For each unsafe prompt:
+   - Retains the **original harmful completion** as the `unsafe` record.
+   - Generates a **synthetic safe refusal** using DeepSeek-V2-Lite-Chat with a safety-aligned system prompt as the `safe` record.
 
-## Dataset Construction
+Safe responses are generated deterministically (greedy decoding, `temperature=0`) and are constrained to be:
+- context-aware and explanatory,
+- non-actionable,
+- similar in length to the unsafe response.
 
-For each unsafe prompt:
-
-- Use a dataset containing harmful or policy-violating completions.
-- Construct paired examples:
-  - `unsafe`: original harmful completion,
-  - `safe`: model-generated refusal-style completion.
-
-Safe responses are:
-
-- context-aware,
-- explanatory,
-- length-comparable,
-- non-actionable.
-
-Both safe and unsafe responses are treated as fixed sequences for analysis.
+Each output pair shares a base ID (`bt_XXXXXX_unsafe` / `bt_XXXXXX_safe`).
 
 ## Routing Measurement
 
 For each pair:
-
-- Run teacher-forced forward passes on:
-  - `User + Unsafe Assistant`
-  - `User + Safe Assistant`
-- Extract routing only over assistant response tokens.
-- Optionally length-match at measurement time:
-  - use `K = min(L_safe, L_unsafe)` tokens.
+- Run teacher-forced forward passes on both `unsafe` and `safe` assistant responses.
+- Extract routing over **assistant response tokens only**.
+- Optionally length-match using `K = min(L_safe, L_unsafe)` tokens.
 
 ## Risk Difference (Safety)
 
-For each expert:
+For each expert `e` at each layer:
 
-- Compute:
+```
+RD_safety(e) = P(e activated | safe) - P(e activated | unsafe)
+```
 
-  `RD_safety = E[A_safe] - E[A_unsafe]`
-
-Experts with high positive RD_safety are associated with refusal/alignment behaviour.
-Experts with negative RD_safety are associated with harmful compliance.
+High positive RD → expert associated with refusal/alignment.
+Negative RD → expert associated with harmful compliance.
 
 ---
 
@@ -171,14 +151,46 @@ Evaluation metrics may include:
 # Repository Layout
 
 ```
-src/                Core scripts (model loading, routing hooks, metrics)
 stage1/
-  data/             Processed QA and safety datasets (JSONL)
-  analysis/         Expert rankings, routing summaries, notebooks
-  run/              Raw routing traces and logs
-docs/               Project notes and extended documentation
-tests/              Unit tests and sanity checks
+  prep/
+    prepare_faithdata.py    Build SQuAD faithfulness JSONL dataset
+    prepare_safedata.py     Build BeaverTails safety-contrast JSONL dataset
+    inspect_modules.py      Inspect model modules
+    inspect_moe.py          Inspect MoE layer structure
+    inspect_tokens.py       Token-level inspection utilities
+    sanitycheck.py          Dataset/routing sanity checks
+    test_deepseek.py        Quick model loading tests
+  src/
+    config.py               Paths and model name (faithfulness pipeline)
+    dataset.py              ChatRecord / ChatPair dataclasses and JSONL loader
+    model.py                load_model and generate utilities
+    routing.py              RouterTracer — hooks MoE gates and records top-k experts
+    visualize.py            accumulate_expert_counts, compute_rd, rank experts, plot
+    run_stage1.py           Main Stage 1 orchestration script (faithfulness pipeline)
+    inference_engine.py     Inference stub (in progress)
+  demo/
+    build_dataset.ipynb     Demo notebook: dataset construction
+    switch_demo.ipynb       Demo notebook: routing switching
+  plots/                    Saved routing instability plots
+src/
+  init.ipynb                Initial exploration notebook
+  main.ipynb                Main notebook
+docs/                       Extended project notes
+tests/                      Unit tests and sanity checks
+Setup.md                    AIRE HPC cluster setup notes
 ```
+
+---
+
+# Infrastructure
+
+All experiments run on the **AIRE HPC cluster** (University of Leeds).
+
+- Model: `deepseek-ai/DeepSeek-V2-Lite` / `deepseek-ai/DeepSeek-V2-Lite-Chat`
+- GPU jobs: `srun --partition=gpu --gres=gpu:1 --mem=40G --time=02:00:00 --pty bash`
+- HF cache: `/scratch/sc23jc3/cache`
+- Data output: `/scratch/sc23jc3/`
+- Python env: `~/envs/deepseek` (venv, PyTorch + transformers)
 
 ---
 
@@ -186,8 +198,8 @@ tests/              Unit tests and sanity checks
 
 This project investigates whether specific experts in a Mixture-of-Experts language model:
 
-- specialize in document-grounded reasoning,
-- specialize in safety-aligned refusal behaviour,
+- specialise in document-grounded reasoning,
+- specialise in safety-aligned refusal behaviour,
 - and can be selectively steered via expert deactivation.
 
 By analysing routing sensitivity across controlled behavioural contrasts,

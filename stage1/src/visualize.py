@@ -122,67 +122,91 @@ def compute_rd(count_with, tokens_with, count_without, tokens_without):
     return rd_by_layer
 
 
-def rank_positive_rd(rd_by_layer):
-    print("\nTop 10 positive RD experts per layer")
-
-    for layer in sorted(rd_by_layer.keys(), key=lambda x: int(x.split(".")[2])):
-        rd = rd_by_layer[layer]
-        positive_mask = rd > 0
-        positive_indices = np.where(positive_mask)[0]
-
-        if positive_indices.size == 0:
-            print(f"Layer {layer}: no positive RD experts")
-            continue
-
-        sorted_indices = positive_indices[np.argsort(rd[positive_indices])[::-1]]
-        top_indices = sorted_indices[:10]
-
-        top_entries = [(int(i), float(rd[i])) for i in top_indices]
-        formatted = ", ".join([f"e{idx}: {val:.6f}" for idx, val in top_entries])
-        print(f"Layer {layer}: {formatted}")
+def rank_positive_rd(rd_by_layer, top_n=20):
+    from rich.console import Console
+    from rich.table import Table
 
     all_positive = []
-
     for layer, rd in rd_by_layer.items():
-        positive_indices = np.where(rd > 0)[0]
-        for idx in positive_indices:
+        for idx in np.where(rd > 0)[0]:
             all_positive.append((float(rd[idx]), layer, int(idx)))
-
     all_positive.sort(key=lambda x: x[0], reverse=True)
 
-    print("\nTop 20 positive RD experts overall")
-    for rank, (val, layer, idx) in enumerate(all_positive[:20], start=1):
-        print(f"{rank:02d}. Layer {layer} e{idx}: {val:.6f}")
+    table = Table(title=f"Top {top_n} Positive RD Experts  (Safety-Preferred)")
+    table.add_column("Rank",   style="dim",     justify="right", width=6)
+    table.add_column("Layer",  style="cyan",    justify="center")
+    table.add_column("Expert", style="magenta", justify="center")
+    table.add_column("RD",     style="green",   justify="right")
+
+    for rank, (val, layer, idx) in enumerate(all_positive[:top_n], start=1):
+        table.add_row(str(rank), f"L{layer.split('.')[2]}", f"e{idx}", f"{val:.6f}")
+
+    Console().print(table)
 
 
-def rank_negative_rd(rd_by_layer):
-    print("\nTop 10 negative RD experts per layer")
-
-    for layer in sorted(rd_by_layer.keys(), key=lambda x: int(x.split(".")[2])):
-        rd = rd_by_layer[layer]
-        negative_mask = rd < 0
-        negative_indices = np.where(negative_mask)[0]
-
-        if negative_indices.size == 0:
-            print(f"Layer {layer}: no negative RD experts")
-            continue
-
-        sorted_indices = negative_indices[np.argsort(rd[negative_indices])]
-        top_indices = sorted_indices[:10]
-
-        top_entries = [(int(i), float(rd[i])) for i in top_indices]
-        formatted = ", ".join([f"e{idx}: {val:.6f}" for idx, val in top_entries])
-        print(f"Layer {layer}: {formatted}")
+def rank_negative_rd(rd_by_layer, top_n=20):
+    from rich.console import Console
+    from rich.table import Table
 
     all_negative = []
-
     for layer, rd in rd_by_layer.items():
-        negative_indices = np.where(rd < 0)[0]
-        for idx in negative_indices:
+        for idx in np.where(rd < 0)[0]:
             all_negative.append((float(rd[idx]), layer, int(idx)))
+    all_negative.sort(key=lambda x: x[0])  # most negative first
 
-    all_negative.sort(key=lambda x: x[0])
+    table = Table(title=f"Top {top_n} Negative RD Experts  (Compliance-Preferred — targets for deactivation)")
+    table.add_column("Rank",   style="dim",     justify="right", width=6)
+    table.add_column("Layer",  style="cyan",    justify="center")
+    table.add_column("Expert", style="magenta", justify="center")
+    table.add_column("RD",     style="red",     justify="right")
 
-    print("\nTop 20 negative RD experts overall")
-    for rank, (val, layer, idx) in enumerate(all_negative[:20], start=1):
-        print(f"{rank:02d}. Layer {layer} e{idx}: {val:.6f}")
+    for rank, (val, layer, idx) in enumerate(all_negative[:top_n], start=1):
+        table.add_row(str(rank), f"L{layer.split('.')[2]}", f"e{idx}", f"{val:.6f}")
+
+    Console().print(table)
+
+
+def plot_rd_heatmap(rd_by_layer, n_samples=None,
+                    filename_prefix="rd_heatmap_safety",
+                    title="Expert RD Heatmap: Safe Refusal vs Unsafe Compliance"):
+    """
+    Heatmap of RD values across all layers (y-axis) and experts (x-axis).
+
+    Red  = positive RD → expert more active during safe refusal.
+    Blue = negative RD → expert more active during unsafe compliance
+                         (primary targets for deactivation in Stage 2).
+    """
+    layers_sorted = sorted(rd_by_layer.keys(), key=lambda x: int(x.split(".")[2]))
+    n_layers  = len(layers_sorted)
+    n_experts = 64
+
+    matrix = np.zeros((n_layers, n_experts))
+    for i, layer in enumerate(layers_sorted):
+        matrix[i] = rd_by_layer[layer]
+
+    layer_labels = [int(l.split(".")[2]) for l in layers_sorted]
+
+    fig, ax = plt.subplots(figsize=(18, 8))
+    vmax = float(np.max(np.abs(matrix)))
+    im = ax.imshow(matrix, aspect="auto", cmap="coolwarm", vmin=-vmax, vmax=vmax)
+
+    cbar = plt.colorbar(im, ax=ax)
+    cbar.set_label("RD  (P(safe) − P(unsafe))", rotation=270, labelpad=15)
+
+    ax.set_xlabel("Expert Index")
+    ax.set_ylabel("Layer Index")
+    ax.set_title(title)
+    ax.set_yticks(range(n_layers))
+    ax.set_yticklabels(layer_labels, fontsize=8)
+    ax.set_xticks(range(n_experts))
+    ax.set_xticklabels(range(n_experts), fontsize=6, rotation=90)
+
+    plt.tight_layout()
+
+    if n_samples is None:
+        filename = os.path.join(PLOT_DIR, f"{filename_prefix}.png")
+    else:
+        filename = os.path.join(PLOT_DIR, f"{filename_prefix}_n{n_samples}.png")
+    plt.savefig(filename, dpi=200)
+    plt.close()
+    print(f"Saved: {filename}")

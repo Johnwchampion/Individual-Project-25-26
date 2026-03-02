@@ -11,6 +11,7 @@ from visualize import (
     compute_layer_token_differences,
     compute_rd,
     plot_layer_changes,
+    plot_rd_heatmap,
     rank_positive_rd,
     rank_negative_rd,
 )
@@ -29,7 +30,7 @@ def extract_question(messages):
     raise ValueError("No user message found")
 
 def find_subsequence(sequence, subseq):
-    
+
     for i in range(len(sequence) - len(subseq) + 1):
         if sequence[i:i + len(subseq)] == subseq:
             return i
@@ -130,7 +131,7 @@ def main():
             model(inputs_without)
 
         trace_without = tracer.stop()
-        
+
         #Identify question span
         full_ids_without = inputs_without[0].tolist()
         start_idx_without = find_subsequence(full_ids_without, question_ids)
@@ -179,6 +180,12 @@ def main():
             filename_prefix="routing_instability_faithfulness",
             title="Routing Instability: With Context vs No Context",
         )
+    plot_rd_heatmap(
+        rd_by_layer,
+        n_samples=len(sampled_pairs),
+        filename_prefix="rd_heatmap_faithfulness",
+        title="Expert RD Heatmap: With Context vs No Context",
+    )
     rank_positive_rd(rd_by_layer)
     rank_negative_rd(rd_by_layer)
 
@@ -256,7 +263,11 @@ def run_safety():
     count_unsafe  = {}
     tokens_safe   = defaultdict(int)
     tokens_unsafe = defaultdict(int)
-    diff_sum_by_layer = defaultdict(int)
+
+    # Per-token instability accumulators — kept to demonstrate that naive
+    # position-by-position comparison is invalid for safety (different tokens
+    # at each position trivially produce near-maximum instability).
+    diff_sum_by_layer    = defaultdict(int)
     diff_tokens_by_layer = defaultdict(int)
 
     skipped = 0
@@ -317,18 +328,18 @@ def run_safety():
             trace_safe, safe_start, safe_start + K
         )
 
-        diff_counts = compute_layer_token_differences(
-            routing_safe,
-            routing_unsafe,
-            return_counts=True,
-        )
-
-        for layer, (diff_sum, token_count) in diff_counts.items():
-            diff_sum_by_layer[layer] += int(diff_sum)
-            diff_tokens_by_layer[layer] += int(token_count)
-
         accumulate_expert_counts(routing_unsafe, count_unsafe, tokens_unsafe)
         accumulate_expert_counts(routing_safe,   count_safe,   tokens_safe)
+
+        # Naive per-token instability (invalid for safety — included only to
+        # demonstrate the methodological flaw: different tokens at each position
+        # cause trivially near-maximum instability regardless of routing).
+        diff_counts = compute_layer_token_differences(
+            routing_safe, routing_unsafe, return_counts=True
+        )
+        for layer, (diff_sum, token_count) in diff_counts.items():
+            diff_sum_by_layer[layer]    += int(diff_sum)
+            diff_tokens_by_layer[layer] += int(token_count)
 
     print(f"\nSkipped {skipped} pairs (response too short, < {cfg.MIN_RESPONSE_TOKENS} tokens)")
 
@@ -343,6 +354,8 @@ def run_safety():
     )
 
     print(f"Computed RD for {len(rd_by_layer)} layers")
+
+    n_processed = len(pairs) - skipped
     layer_means = {
         layer: (diff_sum_by_layer[layer] / diff_tokens_by_layer[layer])
         for layer in diff_sum_by_layer
@@ -351,10 +364,12 @@ def run_safety():
     if layer_means:
         plot_layer_changes(
             layer_means,
-            n_samples=(len(pairs) - skipped),
-            filename_prefix="routing_instability_safety",
-            title="Routing Instability: Safe Refusal vs Unsafe Compliance",
+            n_samples=n_processed,
+            filename_prefix="routing_instability_safety_naive",
+            title="Routing Instability (Safety): Naive Per-Token Comparison — Invalid Baseline",
         )
+    if rd_by_layer:
+        plot_rd_heatmap(rd_by_layer, n_samples=n_processed)
     rank_positive_rd(rd_by_layer)
     rank_negative_rd(rd_by_layer)
 

@@ -8,12 +8,16 @@ from routing import RouterTracer
 from collections import defaultdict
 from visualize import (
     accumulate_expert_counts,
+    accumulate_mean_logits,
     compute_layer_token_differences,
     compute_rd,
+    compute_rd_logits,
     plot_layer_changes,
     plot_rd_heatmap,
+    plot_rd_scatter,
     rank_positive_rd,
     rank_negative_rd,
+    save_rd,
 )
 
 
@@ -38,23 +42,28 @@ def find_subsequence(sequence, subseq):
 
 def slice_question_routing(trace, start_idx, end_idx, top_k=6):
     """
-    Given a trace and token span [start_idx, end_idx),
-    keep only routing corresponding to question tokens.
+    Given a trace and token span [start_idx, end_idx), extract routing for
+    those tokens only.
+
+    Returns a tuple (routing, logits):
+      routing : {layer_name: flat list of top-k indices for the token window}
+      logits  : {layer_name: [[float * n_experts] * n_tokens] for the window}
     """
-    filtered = {}
+    routing = {}
+    logits = {}
 
     for layer_name, events in trace["layer_traces"].items():
         if not events:
             continue
 
-        flat = events[0]["top_experts"]
+        event = events[0]
+        flat = event["top_experts"]
+        routing[layer_name] = flat[start_idx * top_k : end_idx * top_k]
 
-        start_flat = start_idx * top_k
-        end_flat = end_idx * top_k
+        if event.get("logit_scores"):
+            logits[layer_name] = event["logit_scores"][start_idx:end_idx]
 
-        filtered[layer_name] = flat[start_flat:end_flat]
-
-    return filtered
+    return routing, logits
 
 def main():
     #Load data
@@ -77,6 +86,10 @@ def main():
     count_without = {}
     tokens_with = defaultdict(int)
     tokens_without = defaultdict(int)
+    logit_sum_with = {}
+    logit_sum_without = {}
+    logit_tokens_with = defaultdict(int)
+    logit_tokens_without = defaultdict(int)
     diff_sum_by_layer = defaultdict(int)
     diff_tokens_by_layer = defaultdict(int)
 
@@ -115,8 +128,7 @@ def main():
 
         end_idx = start_idx + len(question_ids)
 
-        question_routing = slice_question_routing(trace_with, start_idx, end_idx, top_k=6)
-
+        question_routing, question_logits = slice_question_routing(trace_with, start_idx, end_idx, top_k=6)
 
         #Without context
         inputs_without = tokenizer.apply_chat_template(
@@ -142,8 +154,7 @@ def main():
 
         end_idx_without = start_idx_without + len(question_ids)
 
-        # Slice no-context routing to QUESTION ONLY (same as with-context)
-        question_routing_without = slice_question_routing(
+        question_routing_without, question_logits_without = slice_question_routing(
             trace_without, start_idx_without, end_idx_without, top_k=6
         )
 
@@ -159,13 +170,20 @@ def main():
 
         accumulate_expert_counts(question_routing, count_with, tokens_with)
         accumulate_expert_counts(question_routing_without, count_without, tokens_without)
+        accumulate_mean_logits(question_logits, logit_sum_with, logit_tokens_with)
+        accumulate_mean_logits(question_logits_without, logit_sum_without, logit_tokens_without)
 
     rd_by_layer = compute_rd(
-        count_with,
-        tokens_with,
-        count_without,
-        tokens_without
+        count_with, tokens_with,
+        count_without, tokens_without,
     )
+    rd_logits_by_layer = compute_rd_logits(
+        logit_sum_with, logit_tokens_with,
+        logit_sum_without, logit_tokens_without,
+    )
+
+    save_rd(rd_by_layer,        cfg.RD_FAITH_PATH)
+    save_rd(rd_logits_by_layer, cfg.RD_FAITH_LOGITS_PATH)
 
     print(f"Computed RD for {len(rd_by_layer)} layers")
     layer_means = {
@@ -185,6 +203,13 @@ def main():
         n_samples=len(sampled_pairs),
         filename_prefix="rd_heatmap_faithfulness",
         title="Expert RD Heatmap: With Context vs No Context",
+    )
+    plot_rd_scatter(
+        rd_logits_by_layer,
+        n_samples=len(sampled_pairs),
+        filename_prefix="rd_scatter_faithfulness_logits",
+        title="Expert Logit RD Scatter: With Context vs No Context",
+        label_a="With Context", label_b="No Context",
     )
     rank_positive_rd(rd_by_layer)
     rank_negative_rd(rd_by_layer)
@@ -219,26 +244,32 @@ def slice_assistant_routing(trace, start_idx, end_idx, top_k=6):
     """
     Slice a full-sequence routing trace to cover only assistant response tokens.
 
-    Token positions [start_idx, end_idx) map to flat indices
-    [start_idx * top_k, end_idx * top_k) in the stored expert list,
-    because each token contributes exactly top_k expert selections stored
-    contiguously — matching the layout produced by RouterTracer.
+    Returns a tuple (routing, logits):
+      routing : {layer_name: flat list of top-k indices for the token window}
+      logits  : {layer_name: [[float * n_experts] * n_tokens] for the window}
     """
-    filtered = {}
+    routing = {}
+    logits = {}
+
     for layer_name, events in trace["layer_traces"].items():
         if not events:
             continue
 
-        flat = events[0]["top_experts"]
+        event = events[0]
+        flat = event["top_experts"]
         start_flat = start_idx * top_k
         end_flat   = min(end_idx * top_k, len(flat))
 
         if start_flat >= end_flat:
             continue
 
-        filtered[layer_name] = flat[start_flat:end_flat]
+        routing[layer_name] = flat[start_flat:end_flat]
 
-    return filtered
+        if event.get("logit_scores"):
+            logit_end = min(end_idx, len(event["logit_scores"]))
+            logits[layer_name] = event["logit_scores"][start_idx:logit_end]
+
+    return routing, logits
 
 
 def run_safety():
@@ -263,6 +294,10 @@ def run_safety():
     count_unsafe  = {}
     tokens_safe   = defaultdict(int)
     tokens_unsafe = defaultdict(int)
+    logit_sum_safe    = {}
+    logit_sum_unsafe  = {}
+    logit_tokens_safe   = defaultdict(int)
+    logit_tokens_unsafe = defaultdict(int)
 
     # Per-token instability accumulators — kept to demonstrate that naive
     # position-by-position comparison is invalid for safety (different tokens
@@ -321,15 +356,17 @@ def run_safety():
         trace_safe = tracer.stop()
 
         # Slice routing to assistant response tokens only (length-matched to K)
-        routing_unsafe = slice_assistant_routing(
+        routing_unsafe, logits_unsafe = slice_assistant_routing(
             trace_unsafe, unsafe_start, unsafe_start + K
         )
-        routing_safe = slice_assistant_routing(
+        routing_safe, logits_safe = slice_assistant_routing(
             trace_safe, safe_start, safe_start + K
         )
 
         accumulate_expert_counts(routing_unsafe, count_unsafe, tokens_unsafe)
         accumulate_expert_counts(routing_safe,   count_safe,   tokens_safe)
+        accumulate_mean_logits(logits_unsafe, logit_sum_unsafe, logit_tokens_unsafe)
+        accumulate_mean_logits(logits_safe,   logit_sum_safe,   logit_tokens_safe)
 
         # Naive per-token instability (invalid for safety — included only to
         # demonstrate the methodological flaw: different tokens at each position
@@ -347,11 +384,16 @@ def run_safety():
     # Positive RD  →  expert more active during safe refusal behaviour
     # Negative RD  →  expert more active during harmful compliance
     rd_by_layer = compute_rd(
-        count_safe,
-        tokens_safe,
-        count_unsafe,
-        tokens_unsafe,
+        count_safe, tokens_safe,
+        count_unsafe, tokens_unsafe,
     )
+    rd_logits_by_layer = compute_rd_logits(
+        logit_sum_safe, logit_tokens_safe,
+        logit_sum_unsafe, logit_tokens_unsafe,
+    )
+
+    save_rd(rd_by_layer,        cfg.RD_SAFETY_PATH)
+    save_rd(rd_logits_by_layer, cfg.RD_SAFETY_LOGITS_PATH)
 
     print(f"Computed RD for {len(rd_by_layer)} layers")
 
@@ -370,6 +412,14 @@ def run_safety():
         )
     if rd_by_layer:
         plot_rd_heatmap(rd_by_layer, n_samples=n_processed)
+    if rd_logits_by_layer:
+        plot_rd_scatter(
+            rd_logits_by_layer,
+            n_samples=n_processed,
+            filename_prefix="rd_scatter_safety_logits",
+            title="Expert Logit RD Scatter: Safe Refusal vs Unsafe Compliance",
+            label_a="Safe Refusal", label_b="Unsafe Compliance",
+        )
     rank_positive_rd(rd_by_layer)
     rank_negative_rd(rd_by_layer)
 

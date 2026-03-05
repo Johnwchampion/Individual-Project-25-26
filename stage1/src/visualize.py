@@ -95,6 +95,27 @@ def accumulate_expert_counts(question_routing, count_dict, token_dict):
         token_dict[layer] += T
 
 
+def accumulate_mean_logits(question_logits, logit_sum_dict, token_dict):
+    """
+    Accumulate the sum of raw logit scores per expert per layer.
+
+    question_logits : {layer_name: [[float * n_experts] * n_tokens]}
+    logit_sum_dict  : running sum, {layer_name: np.array(n_experts,)}
+    token_dict      : running token count, {layer_name: int}
+
+    Divide logit_sum_dict[layer] by token_dict[layer] after all examples
+    to get the mean logit per expert for that condition.
+    """
+    for layer, token_logits in question_logits.items():
+        if not token_logits:
+            continue
+        arr = np.array(token_logits, dtype=np.float32)  # [n_tokens, n_experts]
+        if layer not in logit_sum_dict:
+            logit_sum_dict[layer] = np.zeros(arr.shape[1], dtype=np.float64)
+        logit_sum_dict[layer] += arr.sum(axis=0)
+        token_dict[layer] += arr.shape[0]
+
+
 def compute_rd(count_with, tokens_with, count_without, tokens_without):
     rd_by_layer = {}
 
@@ -120,6 +141,57 @@ def compute_rd(count_with, tokens_with, count_without, tokens_without):
         rd_by_layer[layer] = p_with - p_without
 
     return rd_by_layer
+
+
+def compute_rd_logits(logit_sum_a, tokens_a, logit_sum_b, tokens_b):
+    """
+    Compute Risk Difference using mean raw logit scores.
+
+    RD_logit(expert) = mean_logit(expert | condition_a)
+                     - mean_logit(expert | condition_b)
+
+    Positive → expert scores higher on average in condition_a.
+    Negative → expert scores higher on average in condition_b.
+
+    Unlike frequency-based RD, this captures the full competition: experts
+    that nearly made the top-6 but lost still contribute their logit signal.
+    """
+    rd_by_layer = {}
+    for layer in logit_sum_a:
+        if layer not in logit_sum_b:
+            continue
+        T_a = tokens_a.get(layer, 0)
+        T_b = tokens_b.get(layer, 0)
+        if T_a == 0 or T_b == 0:
+            continue
+        mean_a = logit_sum_a[layer] / T_a
+        mean_b = logit_sum_b[layer] / T_b
+        rd_by_layer[layer] = mean_a - mean_b
+    return rd_by_layer
+
+
+def save_rd(rd_by_layer, filepath):
+    """
+    Serialise RD arrays to a JSON file for use in Stage 2.
+    Stores {layer_name: [float * n_experts]}.
+    """
+    import json
+    serialisable = {layer: rd.tolist() for layer, rd in rd_by_layer.items()}
+    os.makedirs(os.path.dirname(filepath), exist_ok=True)
+    with open(filepath, "w") as f:
+        json.dump(serialisable, f)
+    print(f"Saved RD to {filepath}")
+
+
+def load_rd(filepath):
+    """
+    Load RD arrays saved by save_rd.
+    Returns {layer_name: np.array(n_experts,)}.
+    """
+    import json
+    with open(filepath) as f:
+        raw = json.load(f)
+    return {layer: np.array(v) for layer, v in raw.items()}
 
 
 def rank_positive_rd(rd_by_layer, top_n=20):
@@ -166,6 +238,85 @@ def rank_negative_rd(rd_by_layer, top_n=20):
     Console().print(table)
 
 
+def plot_rd_scatter(rd_by_layer, n_samples=None,
+                    filename_prefix="rd_scatter",
+                    title="Expert RD Scatter: Significant (Layer, Expert) Pairs",
+                    threshold_quantile=0.90,
+                    label_a="Condition A", label_b="Condition B"):
+    """
+    Sparse scatter plot of significant RD values.
+
+    Only plots (layer, expert) pairs where |RD| exceeds threshold_quantile of
+    all |RD| values across the full grid. Colour encodes direction (red = label_a
+    preferred, blue = label_b preferred); size encodes magnitude.
+
+    Better than a heatmap when most experts have near-zero RD: the scatter
+    suppresses noise and shows only the signal.
+    """
+    layers_sorted = sorted(rd_by_layer.keys(), key=lambda x: int(x.split(".")[2]))
+
+    all_abs = np.concatenate([np.abs(rd) for rd in rd_by_layer.values()])
+    threshold = np.quantile(all_abs, threshold_quantile)
+
+    xs, ys, raw_sizes, colors = [], [], [], []
+
+    for layer in layers_sorted:
+        layer_idx = int(layer.split(".")[2])
+        rd = rd_by_layer[layer]
+        for expert_idx in range(len(rd)):
+            abs_val = abs(rd[expert_idx])
+            if abs_val >= threshold:
+                xs.append(expert_idx)
+                ys.append(layer_idx)
+                raw_sizes.append(abs_val)
+                colors.append("crimson" if rd[expert_idx] > 0 else "steelblue")
+
+    if not xs:
+        print(f"No points above threshold {threshold:.4f} — skipping scatter")
+        return
+
+    max_size = max(raw_sizes)
+    sizes = [20 + (s / max_size) * 180 for s in raw_sizes]
+
+    fig, ax = plt.subplots(figsize=(14, 7))
+    ax.scatter(xs, ys, s=sizes, c=colors, alpha=0.75, linewidths=0.3, edgecolors="white")
+
+    ax.set_xlabel("Expert Index")
+    ax.set_ylabel("Layer Index")
+    ax.set_title(title)
+    ax.set_xlim(-1, 64)
+
+    layer_indices = [int(l.split(".")[2]) for l in layers_sorted]
+    ax.set_yticks(layer_indices)
+    ax.set_yticklabels(layer_indices, fontsize=7)
+    ax.set_xticks(range(0, 64, 4))
+    ax.grid(True, alpha=0.2, linewidth=0.5)
+
+    from matplotlib.lines import Line2D
+    legend_elements = [
+        Line2D([0], [0], marker="o", color="w", markerfacecolor="crimson",
+               markersize=8, label=f"{label_a} preferred  (RD > 0)"),
+        Line2D([0], [0], marker="o", color="w", markerfacecolor="steelblue",
+               markersize=8, label=f"{label_b} preferred  (RD < 0)"),
+    ]
+    ax.legend(handles=legend_elements, loc="upper right", fontsize=8)
+
+    pct = int((1 - threshold_quantile) * 100)
+    ax.text(0.01, 0.99,
+            f"Showing top {pct}% by |RD|  (threshold = {threshold:.4f})",
+            transform=ax.transAxes, fontsize=7, va="top", color="grey")
+
+    plt.tight_layout()
+
+    if n_samples is None:
+        filename = os.path.join(PLOT_DIR, f"{filename_prefix}.png")
+    else:
+        filename = os.path.join(PLOT_DIR, f"{filename_prefix}_n{n_samples}.png")
+    plt.savefig(filename, dpi=200)
+    plt.close()
+    print(f"Saved: {filename}")
+
+
 def plot_rd_heatmap(rd_by_layer, n_samples=None,
                     filename_prefix="rd_heatmap_safety",
                     title="Expert RD Heatmap: Safe Refusal vs Unsafe Compliance"):
@@ -198,8 +349,7 @@ def plot_rd_heatmap(rd_by_layer, n_samples=None,
     ax.set_title(title)
     ax.set_yticks(range(n_layers))
     ax.set_yticklabels(layer_labels, fontsize=8)
-    ax.set_xticks(range(n_experts))
-    ax.set_xticklabels(range(n_experts), fontsize=6, rotation=90)
+    ax.set_xticks(range(0, n_experts, 8))
 
     plt.tight_layout()
 

@@ -1,14 +1,16 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 import torch
+import torch.nn.functional as F
 
 
 @dataclass
 class RouteEvent:
     top_experts: List[int]
+    logit_scores: List[List[float]] = field(default_factory=list)  # [seq_len][n_experts]
 
 
 class RouterTracer:
@@ -98,7 +100,8 @@ class RouterTracer:
             if top_experts is None:
                 return
 
-            event = RouteEvent(top_experts=top_experts)
+            logit_scores = self._extract_logits(_module, _inputs)
+            event = RouteEvent(top_experts=top_experts, logit_scores=logit_scores)
             self._current_trace["layer_traces"][layer_name].append(self._event_to_dict(event))
 
         return hook
@@ -142,4 +145,29 @@ class RouterTracer:
 
 
     def _event_to_dict(self, event: RouteEvent) -> Dict[str, Any]:
-        return {"top_experts": event.top_experts}
+        return {"top_experts": event.top_experts,
+                "logit_scores": event.logit_scores}
+
+    def _extract_logits(self, module: torch.nn.Module, inputs: Tuple[Any, ...]) -> List[List[float]]:
+        """
+        Recompute raw pre-softmax logits for all experts.
+
+        The gate internally does:
+            logits = F.linear(hidden_states, self.weight)  # [seq_len, n_experts]
+            scores = softmax(logits)
+            topk   = scores.topk(6)
+
+        We replicate only the first line using the gate's weight and the hidden
+        states from _inputs[0], giving us the full competition scores before any
+        expert is selected.
+        """
+        if not hasattr(module, "weight") or not inputs:
+            return []
+        hidden = inputs[0]
+        if not torch.is_tensor(hidden) or hidden.ndim != 3:
+            return []
+        bsz, seq_len, hidden_dim = hidden.shape
+        hidden_flat = hidden.reshape(-1, hidden_dim).float().detach()
+        with torch.no_grad():
+            logits = F.linear(hidden_flat, module.weight.float())  # [seq_len, n_experts]
+        return logits.reshape(bsz, seq_len, -1)[0].detach().cpu().tolist()

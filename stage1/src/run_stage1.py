@@ -13,7 +13,6 @@ from visualize import (
     compute_rd,
     compute_rd_logits,
     plot_layer_changes,
-    plot_rd_heatmap,
     plot_rd_scatter,
     rank_positive_rd,
     rank_negative_rd,
@@ -198,11 +197,13 @@ def main():
             filename_prefix="routing_instability_faithfulness",
             title="Routing Instability: With Context vs No Context",
         )
-    plot_rd_heatmap(
+    plot_rd_scatter(
         rd_by_layer,
         n_samples=len(sampled_pairs),
-        filename_prefix="rd_heatmap_faithfulness",
-        title="Expert RD Heatmap: With Context vs No Context",
+        filename_prefix="rd_scatter_faithfulness",
+        title="Expert RD Scatter: With Context vs No Context",
+        label_a="With Context", label_b="No Context",
+        x_lim=(-1, 1),
     )
     plot_rd_scatter(
         rd_logits_by_layer,
@@ -210,9 +211,10 @@ def main():
         filename_prefix="rd_scatter_faithfulness_logits",
         title="Expert Logit RD Scatter: With Context vs No Context",
         label_a="With Context", label_b="No Context",
+        log_scale=True,
     )
-    rank_positive_rd(rd_by_layer)
-    rank_negative_rd(rd_by_layer)
+    rank_positive_rd(rd_by_layer, filename_prefix="rd_rank_faith_positive")
+    rank_negative_rd(rd_by_layer, filename_prefix="rd_rank_faith_negative")
 
     print("\nFinished all pairs")
 
@@ -411,7 +413,14 @@ def run_safety():
             title="Routing Instability (Safety): Naive Per-Token Comparison — Invalid Baseline",
         )
     if rd_by_layer:
-        plot_rd_heatmap(rd_by_layer, n_samples=n_processed)
+        plot_rd_scatter(
+            rd_by_layer,
+            n_samples=n_processed,
+            filename_prefix="rd_scatter_safety",
+            title="Expert RD Scatter: Safe Refusal vs Unsafe Compliance",
+            label_a="Safe Refusal", label_b="Unsafe Compliance",
+            x_lim=(-1, 1),
+        )
     if rd_logits_by_layer:
         plot_rd_scatter(
             rd_logits_by_layer,
@@ -419,9 +428,10 @@ def run_safety():
             filename_prefix="rd_scatter_safety_logits",
             title="Expert Logit RD Scatter: Safe Refusal vs Unsafe Compliance",
             label_a="Safe Refusal", label_b="Unsafe Compliance",
+            log_scale=True,
         )
-    rank_positive_rd(rd_by_layer)
-    rank_negative_rd(rd_by_layer)
+    rank_positive_rd(rd_by_layer, filename_prefix="rd_rank_safety_positive")
+    rank_negative_rd(rd_by_layer, filename_prefix="rd_rank_safety_negative")
 
     print("\nFinished all safety pairs")
 

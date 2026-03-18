@@ -3,6 +3,8 @@ import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
+import plotly.graph_objects as go
 
 
 TOP_K = 6
@@ -194,7 +196,8 @@ def load_rd(filepath):
     return {layer: np.array(v) for layer, v in raw.items()}
 
 
-def rank_positive_rd(rd_by_layer, top_n=20):
+def rank_positive_rd(rd_by_layer, top_n=20, filename_prefix="rd_rank_positive"):
+    import csv
     from rich.console import Console
     from rich.table import Table
 
@@ -203,6 +206,7 @@ def rank_positive_rd(rd_by_layer, top_n=20):
         for idx in np.where(rd > 0)[0]:
             all_positive.append((float(rd[idx]), layer, int(idx)))
     all_positive.sort(key=lambda x: x[0], reverse=True)
+    rows = all_positive[:top_n]
 
     table = Table(title=f"Top {top_n} Positive RD Experts  (Safety-Preferred)")
     table.add_column("Rank",   style="dim",     justify="right", width=6)
@@ -210,13 +214,22 @@ def rank_positive_rd(rd_by_layer, top_n=20):
     table.add_column("Expert", style="magenta", justify="center")
     table.add_column("RD",     style="green",   justify="right")
 
-    for rank, (val, layer, idx) in enumerate(all_positive[:top_n], start=1):
+    for rank, (val, layer, idx) in enumerate(rows, start=1):
         table.add_row(str(rank), f"L{layer.split('.')[2]}", f"e{idx}", f"{val:.6f}")
 
     Console().print(table)
 
+    csv_path = os.path.join(PLOT_DIR, f"{filename_prefix}.csv")
+    with open(csv_path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["rank", "layer", "expert", "rd"])
+        for rank, (val, layer, idx) in enumerate(rows, start=1):
+            writer.writerow([rank, layer.split(".")[2], idx, f"{val:.6f}"])
+    print(f"Saved: {csv_path}")
 
-def rank_negative_rd(rd_by_layer, top_n=20):
+
+def rank_negative_rd(rd_by_layer, top_n=20, filename_prefix="rd_rank_negative"):
+    import csv
     from rich.console import Console
     from rich.table import Table
 
@@ -225,6 +238,7 @@ def rank_negative_rd(rd_by_layer, top_n=20):
         for idx in np.where(rd < 0)[0]:
             all_negative.append((float(rd[idx]), layer, int(idx)))
     all_negative.sort(key=lambda x: x[0])  # most negative first
+    rows = all_negative[:top_n]
 
     table = Table(title=f"Top {top_n} Negative RD Experts  (Compliance-Preferred — targets for deactivation)")
     table.add_column("Rank",   style="dim",     justify="right", width=6)
@@ -232,79 +246,113 @@ def rank_negative_rd(rd_by_layer, top_n=20):
     table.add_column("Expert", style="magenta", justify="center")
     table.add_column("RD",     style="red",     justify="right")
 
-    for rank, (val, layer, idx) in enumerate(all_negative[:top_n], start=1):
+    for rank, (val, layer, idx) in enumerate(rows, start=1):
         table.add_row(str(rank), f"L{layer.split('.')[2]}", f"e{idx}", f"{val:.6f}")
 
     Console().print(table)
+
+    csv_path = os.path.join(PLOT_DIR, f"{filename_prefix}.csv")
+    with open(csv_path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["rank", "layer", "expert", "rd"])
+        for rank, (val, layer, idx) in enumerate(rows, start=1):
+            writer.writerow([rank, layer.split(".")[2], idx, f"{val:.6f}"])
+    print(f"Saved: {csv_path}")
 
 
 def plot_rd_scatter(rd_by_layer, n_samples=None,
                     filename_prefix="rd_scatter",
                     title="Expert RD Scatter: Significant (Layer, Expert) Pairs",
                     threshold_quantile=0.90,
-                    label_a="Condition A", label_b="Condition B"):
+                    label_a="Condition A", label_b="Condition B",
+                    color_a="#2980b9", color_b="#c0392b",
+                    x_lim=None,
+                    log_scale=False):
     """
-    Sparse scatter plot of significant RD values.
+    Butterfly scatter of significant RD values.
 
-    Only plots (layer, expert) pairs where |RD| exceeds threshold_quantile of
-    all |RD| values across the full grid. Colour encodes direction (red = label_a
-    preferred, blue = label_b preferred); size encodes magnitude.
-
-    Better than a heatmap when most experts have near-zero RD: the scatter
-    suppresses noise and shows only the signal.
+    Positive RD → dot plotted to the RIGHT of centre (label_a preferred), color_a.
+    Negative RD → dot plotted to the LEFT of centre  (label_b preferred), color_b.
+    The central y-axis line physically separates the two conditions. Expert index
+    is printed inside each dot. Dot size is uniform so x-position alone encodes
+    magnitude without redundancy.
+    Only (layer, expert) pairs above threshold_quantile of |RD| are shown.
+    Small y-jitter separates same-layer dots.
     """
     layers_sorted = sorted(rd_by_layer.keys(), key=lambda x: int(x.split(".")[2]))
 
     all_abs = np.concatenate([np.abs(rd) for rd in rd_by_layer.values()])
     threshold = np.quantile(all_abs, threshold_quantile)
 
-    xs, ys, raw_sizes, colors = [], [], [], []
+    rng = np.random.default_rng(42)
+    xs, ys, layer_idxs, expert_labels, colors = [], [], [], [], []
 
     for layer in layers_sorted:
         layer_idx = int(layer.split(".")[2])
         rd = rd_by_layer[layer]
         for expert_idx in range(len(rd)):
-            abs_val = abs(rd[expert_idx])
-            if abs_val >= threshold:
-                xs.append(expert_idx)
-                ys.append(layer_idx)
-                raw_sizes.append(abs_val)
-                colors.append("crimson" if rd[expert_idx] > 0 else "steelblue")
+            if abs(rd[expert_idx]) >= threshold:
+                val = float(rd[expert_idx])
+                xs.append(val)
+                ys.append(layer_idx + rng.uniform(-0.35, 0.35))
+                layer_idxs.append(layer_idx)
+                expert_labels.append(str(expert_idx))
+                colors.append(color_a if val > 0 else color_b)
 
     if not xs:
         print(f"No points above threshold {threshold:.4f} — skipping scatter")
         return
 
-    max_size = max(raw_sizes)
-    sizes = [20 + (s / max_size) * 180 for s in raw_sizes]
+    fig, ax = plt.subplots(figsize=(12, 9))
 
-    fig, ax = plt.subplots(figsize=(14, 7))
-    ax.scatter(xs, ys, s=sizes, c=colors, alpha=0.75, linewidths=0.3, edgecolors="white")
+    for x, y, lbl, c in zip(xs, ys, expert_labels, colors):
+        ax.text(x, y, lbl, ha="center", va="center",
+                fontsize=7, color="white", fontweight="bold", zorder=3,
+                bbox=dict(boxstyle="round,pad=0.2", facecolor=c,
+                          edgecolor="none", alpha=0.9))
 
-    ax.set_xlabel("Expert Index")
-    ax.set_ylabel("Layer Index")
-    ax.set_title(title)
-    ax.set_xlim(-1, 64)
+    ax.axvline(0, color="black", linewidth=1.2, zorder=1)
+
+    if log_scale:
+        linthresh = float(np.percentile([abs(v) for v in xs], 50)) or 1.0
+        ax.set_xscale("symlog", linthresh=linthresh)
+        x_max = float(max(abs(v) for v in xs)) * 1.1
+        ax.set_xlim(-x_max, x_max)
+    elif x_lim is not None:
+        x_max = max(abs(x_lim[0]), abs(x_lim[1]))
+        ax.set_xlim(x_lim[0], x_lim[1])
+    else:
+        x_max = float(np.percentile([abs(v) for v in xs], 98)) * 1.4
+        ax.set_xlim(-x_max, x_max)
 
     layer_indices = [int(l.split(".")[2]) for l in layers_sorted]
+    y_top = max(ys) + 0.8
+    ax.set_ylim(min(ys) - 0.8, y_top + 0.3)
     ax.set_yticks(layer_indices)
     ax.set_yticklabels(layer_indices, fontsize=7)
-    ax.set_xticks(range(0, 64, 4))
-    ax.grid(True, alpha=0.2, linewidth=0.5)
 
-    from matplotlib.lines import Line2D
+    ax.text(-x_max * 0.97, y_top, f"← {label_b} preferred",
+            ha="left", va="bottom", fontsize=9, color="#555555", style="italic")
+    ax.text(x_max * 0.97, y_top, f"{label_a} preferred →",
+            ha="right", va="bottom", fontsize=9, color="#555555", style="italic")
+
+    ax.set_xlabel("RD value  (logit score difference)")
+    ax.set_ylabel("Layer Index")
+    ax.set_title(title)
+    ax.grid(True, alpha=0.15, linewidth=0.5)
+
     legend_elements = [
-        Line2D([0], [0], marker="o", color="w", markerfacecolor="crimson",
-               markersize=8, label=f"{label_a} preferred  (RD > 0)"),
-        Line2D([0], [0], marker="o", color="w", markerfacecolor="steelblue",
-               markersize=8, label=f"{label_b} preferred  (RD < 0)"),
+        Line2D([0], [0], marker="o", color="w", markerfacecolor=color_a,
+               markersize=9, label=f"{label_a} preferred"),
+        Line2D([0], [0], marker="o", color="w", markerfacecolor=color_b,
+               markersize=9, label=f"{label_b} preferred"),
     ]
-    ax.legend(handles=legend_elements, loc="upper right", fontsize=8)
+    ax.legend(handles=legend_elements, loc="lower right", fontsize=8)
 
     pct = int((1 - threshold_quantile) * 100)
-    ax.text(0.01, 0.99,
-            f"Showing top {pct}% by |RD|  (threshold = {threshold:.4f})",
-            transform=ax.transAxes, fontsize=7, va="top", color="grey")
+    ax.text(0.5, -0.06,
+            f"Showing top {pct}% by |RD|  (threshold = {threshold:.4f})  —  number = expert index",
+            transform=ax.transAxes, fontsize=7, ha="center", color="grey")
 
     plt.tight_layout()
 
@@ -312,9 +360,57 @@ def plot_rd_scatter(rd_by_layer, n_samples=None,
         filename = os.path.join(PLOT_DIR, f"{filename_prefix}.png")
     else:
         filename = os.path.join(PLOT_DIR, f"{filename_prefix}_n{n_samples}.png")
-    plt.savefig(filename, dpi=200)
+    plt.savefig(filename, dpi=200, bbox_inches="tight")
     plt.close()
     print(f"Saved: {filename}")
+
+    # --- Interactive HTML (Plotly) ---
+    mask_a = [c == color_a for c in colors]
+    hover = [f"Expert {e}<br>Layer {l}<br>RD = {x:.6f}"
+             for e, l, x in zip(expert_labels, layer_idxs, xs)]
+
+    html_fig = go.Figure()
+    html_fig.add_trace(go.Scatter(
+        x=[x for x, m in zip(xs, mask_a) if m],
+        y=[y for y, m in zip(ys, mask_a) if m],
+        mode="markers",
+        marker=dict(color=color_a, size=10, opacity=0.85,
+                    line=dict(color="white", width=0.5)),
+        name=f"{label_a} preferred",
+        hovertext=[h for h, m in zip(hover, mask_a) if m],
+        hoverinfo="text",
+    ))
+    html_fig.add_trace(go.Scatter(
+        x=[x for x, m in zip(xs, mask_a) if not m],
+        y=[y for y, m in zip(ys, mask_a) if not m],
+        mode="markers",
+        marker=dict(color=color_b, size=10, opacity=0.85,
+                    line=dict(color="white", width=0.5)),
+        name=f"{label_b} preferred",
+        hovertext=[h for h, m in zip(hover, mask_a) if not m],
+        hoverinfo="text",
+    ))
+
+    y_min = min(layer_indices) - 0.8
+    y_max_html = max(layer_indices) + 0.8
+    html_fig.add_shape(type="line", x0=0, x1=0, y0=y_min, y1=y_max_html,
+                       line=dict(color="black", width=1.5))
+
+    x_range = list(x_lim) if x_lim is not None else [-x_max, x_max]
+    html_fig.update_layout(
+        title=dict(text=title, x=0.5),
+        xaxis=dict(title="RD value", range=x_range,
+                   zeroline=False, showgrid=True, gridcolor="#eeeeee"),
+        yaxis=dict(title="Layer Index", tickvals=layer_indices,
+                   ticktext=[str(l) for l in layer_indices],
+                   showgrid=True, gridcolor="#eeeeee"),
+        hovermode="closest",
+        template="plotly_white",
+    )
+
+    html_filename = filename.replace(".png", ".html")
+    html_fig.write_html(html_filename, include_plotlyjs="cdn")
+    print(f"Saved: {html_filename}")
 
 
 def plot_rd_heatmap(rd_by_layer, n_samples=None,

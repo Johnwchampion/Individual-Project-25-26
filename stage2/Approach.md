@@ -19,93 +19,72 @@ These differences were quantified using **Risk Difference (RD)**, a signed per-e
 
 Stage 1 computes RD in two complementary ways:
 
-- **Activation-frequency RD** – computed from how often an expert appears in the router's **top-k selection** (top-6 for DeepSeek-V2-Lite). This measures how frequently an expert actually participates in the model's computation.
+- **Activation-frequency RD** – how often an expert appears in the router's top-k selection (top-6 for DeepSeek-V2-Lite), reflecting **realised expert usage**.
+- **Logit-based RD** – the mean raw router logit assigned to each expert before softmax and top-k selection, reflecting **router preference prior to selection** and capturing experts that narrowly miss the threshold.
 
-- **Logit-based RD** – computed from the mean **raw router logits** assigned to each expert before the softmax and top-k selection step. This captures the router's underlying preference signal across **all experts**, including those that narrowly miss the top-k threshold.
-
-The two metrics therefore reflect different stages of the routing process. Frequency-based RD reflects **realised expert usage**, while logit-based RD reflects **router preference prior to selection**.
-
-Experts with large RD values in either metric are treated as candidates for steering interventions in Stage 2.
-
-Importantly, because the router ultimately decides expert participation through a **competition among logits before the top-k selection**, steering interventions can directly influence routing by modifying these logits.
+Experts selected for steering are those in the **intersection of the top-N by |RD| on both metrics**. Requiring agreement across both metrics ensures selected experts are consistently selected *and* consistently preferred at the logit level. N is treated as a hyperparameter and varied across experiments.
 
 ---
 
-However, Stage 1 provides **correlational evidence only**. Experts that activate more frequently during a behaviour are not necessarily *causing* that behaviour; they may simply be correlated with other internal processes. Stage 2 therefore introduces **expert steering interventions** to test whether modifying the router’s behaviour alters the model’s outputs in predictable ways.
+However, Stage 1 provides **correlational evidence only**. Stage 2 therefore introduces **expert steering interventions** to test whether modifying the router's behaviour alters outputs in predictable ways.
 
-The central idea is straightforward:
+To test this, Stage 2 applies steering in **both directions**:
 
-> If certain experts are responsible for particular behaviours, then deliberately suppressing those experts during routing should measurably change the model’s behaviour.
+- **Suppressing unsafe-compliance / context-ignoring experts** — to steer the model towards safer, more faithful outputs.
+- **Suppressing safe-refusal / context-faithful experts** — to steer in the opposite direction, serving as a contrastive condition.
 
-To test this, Stage 2 introduces two complementary steering mechanisms:
-
-- **Hard expert deactivation**
-- **Soft expert suppression**
-
-These two interventions serve different scientific purposes and together allow a richer analysis of expert behaviour.
+Both directions are evaluated because `candidates.py` already supports a `direction` parameter, and running both provides a stronger causal argument: if suppressing one set increases a behaviour while suppressing the other decreases it, this constitutes bidirectional evidence for expert involvement.
 
 ---
 
 ## Why Steering is Performed at the Router Level
 
-Mixture-of-Experts language models use a **router network** to determine which experts process each token. For every token in a sequence, the router computes a score for each expert and selects the top-k experts (six in the case of DeepSeek-V2-Lite). The outputs of these selected experts are then combined to produce the layer output.
-
-Steering interventions therefore operate at the **pre-softmax logit level** inside the gate module — modifying the raw scores that drive expert selection before any top-k decision is made. This allows the experiment to influence **which experts participate in computation**, rather than modifying the experts themselves.
-
-By intervening at the router level, the experiments probe whether behavioural differences observed in Stage 1 arise from **systematic routing preferences** within the model.
+MoE models use a router to compute a score for each expert and select the top-k. Steering interventions operate at the **pre-softmax logit level** inside the gate module, modifying raw scores before any top-k decision is made. This influences **which experts participate in computation** without modifying the experts themselves.
 
 ---
 
 ## Hard Expert Deactivation
 
-Hard deactivation completely removes selected experts from the routing process.
+Hard deactivation assigns a score of −1e9 to selected experts, ensuring they never appear in the top-k. The router must select alternatives.
 
-In practice, this means that during routing the suppressed experts are assigned extremely low router scores, ensuring they never appear in the top-k selected experts. The router must therefore select alternative experts to replace them.
-
-This intervention tests a **causal necessity hypothesis**:
-
-> If these experts are necessary for a behaviour, removing them should significantly alter that behaviour.
-
-For example, if a set of experts is consistently activated when the model produces harmful responses, suppressing those experts may increase the likelihood that the model refuses harmful prompts.
-
-Hard deactivation provides the clearest causal test because it forces the model to operate **without access to those experts**.
+This tests a **causal necessity hypothesis**: if these experts are necessary for a behaviour, removing them should significantly alter that behaviour.
 
 ---
 
 ## Soft Expert Suppression
 
-Soft suppression reduces the router score of selected experts without removing them entirely.
-
-Instead of completely excluding experts from routing, their scores are shifted downward by a controllable amount. This makes them **less competitive during expert selection**, but still allows them to appear among the selected experts if their relevance to a token is sufficiently strong.
-
-Soft steering introduces a continuous **steering strength parameter** that determines how strongly expert selection is biased away from the targeted experts.
-
-This intervention allows us to examine **behavioural sensitivity to routing changes**. Rather than asking whether experts are strictly necessary for a behaviour, soft suppression explores how behaviour changes as the router is progressively biased away from certain experts.
+Soft suppression shifts expert scores downward by a controllable **strength parameter**, making them less competitive without guaranteeing exclusion. This tests **behavioural sensitivity**: how strongly does behaviour depend on these experts as routing is progressively biased away from them?
 
 ---
 
 ## Why Both Interventions Are Used
 
-Hard and soft steering answer **different experimental questions**, and using both provides a more complete understanding of expert behaviour.
+Hard and soft steering answer different questions. Hard deactivation tests causal necessity; soft suppression tests sensitivity. Together they reveal whether behavioural experts are **strictly necessary** or **statistically influential**, and quantify the trade-off between steering strength and model performance.
 
-Hard steering addresses a **causal necessity question**:
+---
 
-> Does removing these experts change the model’s behaviour?
+## Evaluation
 
-Soft steering addresses a **sensitivity question**:
+### Safety
 
-> How strongly does the model’s behaviour depend on these experts?
+Safety outputs are classified by **Llama-Guard-3-8B** (the same model used in the SteerMoE paper), which is feasible given the 20–30 GB GPU allocation on AIRE. Benchmarks:
 
-Together they allow the project to study the **trade-off between behavioural steering and model performance**. Hard suppression provides a strong intervention that reveals whether expert sets are critical for particular behaviours, while soft suppression allows the experiments to gradually vary steering strength and observe how behaviour and performance metrics evolve.
+| Benchmark | Purpose |
+|---|---|
+| AdvBench | Core harmful-prompt evaluation |
+| TDC2023 | Safe steering control condition |
+| HH-RLHF Harmless | Benign baseline (should not be refused) |
+| StrongREJECT + AIM jailbreak | Unsafe steering contrastive condition |
 
-This dual approach enables analysis of:
+### Faithfulness
 
-- whether behavioural experts are **strictly necessary** or merely **statistically influential**
-- how strongly behavioural outputs depend on routing probabilities
-- whether behavioural steering introduces **performance degradation**
-- how robust the model is to systematic changes in routing decisions
+Faithfulness is evaluated via **exact-match or string-match against gold answers** — no judge LLM is required. Benchmarks:
 
-Using both interventions therefore supports a deeper investigation into the relationship between **expert routing patterns and emergent model behaviour**.
+| Benchmark | Purpose |
+|---|---|
+| FaithEval-Counterfactual | Model ignores context in favour of parametric knowledge |
+| FaithEval-Unanswerable | Model invents answers rather than deferring to context |
+| MCTest | Control condition (benign reading comprehension) |
 
 ---
 
@@ -113,13 +92,8 @@ Using both interventions therefore supports a deeper investigation into the rela
 
 Stage 2 aims to answer three primary questions:
 
-1. **Causal Influence**  
-   Do experts identified in Stage 1 causally influence model behaviour when their participation in routing is suppressed?
+1. **Causal Influence** — Do experts identified in Stage 1 causally influence model behaviour when suppressed?
+2. **Behavioural Sensitivity** — How does behaviour change as routing is progressively biased away from these experts?
+3. **Performance Trade-offs** — To what extent does expert steering alter model performance?
 
-2. **Behavioural Sensitivity**  
-   How does behaviour change as the router is progressively biased away from these experts?
-
-3. **Performance Trade-offs**  
-   To what extent does expert steering alter model performance, such as language modelling quality or task accuracy?
-
-By addressing these questions, Stage 2 moves from **observational analysis of routing patterns** to **controlled manipulation of the model’s internal decision process**, providing stronger evidence about how behavioural traits emerge in mixture-of-experts language models.
+By addressing these questions, Stage 2 moves from **observational routing analysis** to **controlled manipulation of the model's internal decision process**, providing stronger evidence about how behavioural traits emerge in MoE language models.

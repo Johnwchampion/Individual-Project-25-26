@@ -2,70 +2,138 @@ import torch
 import torch.nn.functional as F
 
 
-def _unpack_gate_output(outputs):
-    """Extract (float_tensor, int_tensor) from gate output regardless of tuple order."""
-    tensors = [t for t in outputs if torch.is_tensor(t)] if isinstance(outputs, (tuple, list)) else [outputs]
-    float_t = next(t for t in tensors if t.dtype.is_floating_point)
-    int_t   = next(t for t in tensors if not t.dtype.is_floating_point)
-    return float_t, int_t
-
-
 class ExpertSteerer:
     """
-    Registers forward hooks on each targeted MoE gate to modify router logits
-    before the top-k selection step.
+    Expert steering for DeepSeek-V2's MoE gates.
 
-    Hard mode:  logit[expert] = -1e9    (expert is never selected)
-    Soft mode:  logit[expert] -= strength  (expert is less competitive)
+    Hard mode (candidates: {layer: [expert_indices]}):
+        Two-hook architecture. A pre-hook caches the gate's log-softmax routing
+        scores. An output hook intercepts (topk_idx, topk_weight, aux_loss) and
+        replaces any suppressed expert that was selected with the
+        highest-scoring non-suppressed alternative from the cached scores.
+        Weights are recomputed via softmax over the replacement experts' scores.
+        Exactly k experts always contribute. Only tokens that had a suppressed
+        expert selected are modified; all other tokens are untouched.
+
+    Soft mode (candidates: {layer: {expert_idx: rd_score}}):
+        Pre-selection only. The desired logit shift δ_logit[i] = strength * Δi
+        is injected by perturbing the gate's input hidden state h before the
+        gate runs. The perturbation δh is precomputed as the minimum-norm
+        solution to F.linear(h + δh, W) = F.linear(h, W) + δ_logit, which is:
+
+            δh = δ_logit @ (W Wᵀ)⁻¹ @ W
+
+        The gate's grouped top-k then runs normally on the shifted logits.
+        Always k experts with natural, in-distribution weights. Positive
+        strength boosts high-RD (safe/faithful) experts; negative reverses.
 
     Usage:
-        with ExpertSteerer(model, candidates, mode="hard") as steerer:
+        steerer = ExpertSteerer(model, candidates, mode="hard")
+        output  = generate(model, tokenizer, messages)
+        steerer.remove()
+
+        # or as a context manager:
+        with ExpertSteerer(model, candidates, mode="hard"):
             output = generate(model, tokenizer, messages)
     """
 
-    def __init__(self, model, candidates, mode="hard", strength=30.0):
+    def __init__(self, model, candidates, mode="hard", strength=1.0):
         """
-        candidates: {layer_index (int): [expert_indices]}
+        candidates: {layer_index (int): [expert_indices]}        for hard mode
+                    {layer_index (int): {expert_idx: rd_score}} for soft mode
         mode:       "hard" or "soft"
-        strength:   logit penalty magnitude for soft mode
+        strength:   scaling factor applied to RD scores (default 1.0)
+                    use negative values to reverse steering direction
         """
         self._hooks = []
         transformer = model.model
 
-        for layer_idx, expert_indices in candidates.items():
+        for layer_idx, expert_data in candidates.items():
             layer = transformer.layers[layer_idx]
             if not hasattr(layer, "mlp") or not hasattr(layer.mlp, "gate"):
                 continue
-            gate  = layer.mlp.gate
-            top_k = getattr(gate, "top_k", 6)
-            hook  = gate.register_forward_hook(
-                self._make_hook(expert_indices, top_k, mode, strength)
-            )
-            self._hooks.append(hook)
-
-    def _make_hook(self, expert_indices, top_k, mode, strength):
-        def hook(module, inputs, outputs):
-            hidden = inputs[0]
-            bsz, seq_len, hidden_dim = hidden.shape
-            h = hidden.reshape(-1, hidden_dim).float()
-
-            with torch.no_grad():
-                logits = F.linear(h, module.weight.float())  # [bsz*seq, n_experts]
+            gate = layer.mlp.gate
 
             if mode == "hard":
-                logits[:, expert_indices] = -1e9
+                pre_hook = gate.register_forward_pre_hook(self._make_pre_hook())
+                self._hooks.append(pre_hook)
+                out_hook = gate.register_forward_hook(
+                    self._make_hard_hook(set(expert_data))
+                )
+                self._hooks.append(out_hook)
             else:
-                logits[:, expert_indices] -= strength
+                delta_h = self._compute_delta_h(gate, expert_data, strength)
+                soft_hook = gate.register_forward_pre_hook(
+                    self._make_soft_pre_hook(delta_h)
+                )
+                self._hooks.append(soft_hook)
 
-            scores = F.softmax(logits, dim=-1)
-            topk_weights, topk_idx = torch.topk(scores, k=top_k, dim=-1, sorted=False)
-            topk_weights = topk_weights / topk_weights.sum(dim=-1, keepdim=True)
+    @staticmethod
+    def _compute_delta_h(gate, rd_scores, strength):
+        """
+        Precompute h perturbation for soft pre-selection.
 
-            orig_weights, orig_idx = _unpack_gate_output(outputs)
-            topk_weights = topk_weights.to(orig_weights.dtype).reshape_as(orig_weights)
-            topk_idx     = topk_idx.to(orig_idx.dtype).reshape_as(orig_idx)
+        We want F.linear(h + δh, W) = F.linear(h, W) + δ_logit, i.e.
+        δh @ Wᵀ = δ_logit. Minimum-norm solution (W is fat: n_experts < d_model):
+            δh = δ_logit @ (W Wᵀ)⁻¹ @ W
+        """
+        W = gate.weight.data.float()          # [n_experts, d_model]
+        n_experts = W.shape[0]
 
-            return (topk_weights, topk_idx)
+        delta_logit = torch.zeros(n_experts, dtype=torch.float32, device=W.device)
+        for ei, rd in rd_scores.items():
+            delta_logit[ei] = strength * rd
+
+        WWT = W @ W.T                          # [n_experts, n_experts]
+        WWT_inv = torch.linalg.inv(WWT)        # [n_experts, n_experts]
+        delta_h = delta_logit @ WWT_inv @ W    # [d_model]
+        return delta_h.to(gate.weight.dtype)
+
+    @staticmethod
+    def _make_soft_pre_hook(delta_h):
+        def hook(module, args):
+            h = args[0]
+            return (h + delta_h,) + args[1:]
+        return hook
+
+    @staticmethod
+    def _make_pre_hook():
+        def hook(module, args):
+            h = args[0]
+            h_flat = h.reshape(-1, h.shape[-1])
+            logits = F.linear(h_flat, module.weight)
+            module._cached_log_scores = F.log_softmax(logits, dim=-1)
+        return hook
+
+    @staticmethod
+    def _make_hard_hook(suppressed_set):
+        def hook(module, inputs, outputs):
+            topk_idx    = outputs[0].clone()
+            topk_weight = outputs[1].clone()   # start from gate's original weights
+            aux_loss    = outputs[2] if len(outputs) > 2 else None
+            log_scores  = module._cached_log_scores  # [n_tokens, n_experts]
+
+            # Mask suppressed experts to -inf so they can't be chosen
+            mod_scores = log_scores.clone()
+            for ei in suppressed_set:
+                mod_scores[:, ei] = float("-inf")
+
+            # Find tokens where a suppressed expert was selected
+            suppressed_t = torch.tensor(
+                sorted(suppressed_set), device=topk_idx.device
+            )
+            needs = (topk_idx.unsqueeze(-1) == suppressed_t).any(dim=-1).any(dim=-1)
+
+            if needs.any():
+                k = topk_idx.shape[-1]
+                _, new_idx = mod_scores[needs].topk(k, dim=-1)
+                topk_idx[needs] = new_idx
+                # Only recompute weights for the tokens that needed replacement
+                selected_scores = mod_scores[needs].gather(1, new_idx)
+                topk_weight[needs] = F.softmax(selected_scores, dim=-1).to(topk_weight.dtype)
+
+            # Tokens that didn't need replacement keep the gate's original weights
+            return (topk_idx, topk_weight, aux_loss)
 
         return hook
 

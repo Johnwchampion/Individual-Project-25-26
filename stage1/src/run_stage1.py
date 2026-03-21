@@ -6,16 +6,12 @@ from dataset import load_jsonl, group_into_pairs, sample_pairs, group_into_safet
 from model import load_model, generate
 from routing import RouterTracer
 from collections import defaultdict
-from visualize import (
+from rd_utils import (
     accumulate_expert_counts,
     accumulate_mean_logits,
     compute_layer_token_differences,
     compute_rd,
     compute_rd_logits,
-    plot_layer_changes,
-    plot_rd_scatter,
-    rank_positive_rd,
-    rank_negative_rd,
     save_rd,
 )
 
@@ -185,37 +181,6 @@ def main():
     save_rd(rd_logits_by_layer, cfg.RD_FAITH_LOGITS_PATH)
 
     print(f"Computed RD for {len(rd_by_layer)} layers")
-    layer_means = {
-        layer: (diff_sum_by_layer[layer] / diff_tokens_by_layer[layer])
-        for layer in diff_sum_by_layer
-        if diff_tokens_by_layer[layer] > 0
-    }
-    if layer_means:
-        plot_layer_changes(
-            layer_means,
-            n_samples=len(sampled_pairs),
-            filename_prefix="routing_instability_faithfulness",
-            title="Routing Instability: With Context vs No Context",
-        )
-    plot_rd_scatter(
-        rd_by_layer,
-        n_samples=len(sampled_pairs),
-        filename_prefix="rd_scatter_faithfulness",
-        title="Expert RD Scatter: With Context vs No Context",
-        label_a="With Context", label_b="No Context",
-        x_lim=(-1, 1),
-    )
-    plot_rd_scatter(
-        rd_logits_by_layer,
-        n_samples=len(sampled_pairs),
-        filename_prefix="rd_scatter_faithfulness_logits",
-        title="Expert Logit RD Scatter: With Context vs No Context",
-        label_a="With Context", label_b="No Context",
-        log_scale=True,
-    )
-    rank_positive_rd(rd_by_layer, filename_prefix="rd_rank_faith_positive")
-    rank_negative_rd(rd_by_layer, filename_prefix="rd_rank_faith_negative")
-
     print("\nFinished all pairs")
 
 
@@ -398,41 +363,6 @@ def run_safety():
     save_rd(rd_logits_by_layer, cfg.RD_SAFETY_LOGITS_PATH)
 
     print(f"Computed RD for {len(rd_by_layer)} layers")
-
-    n_processed = len(pairs) - skipped
-    layer_means = {
-        layer: (diff_sum_by_layer[layer] / diff_tokens_by_layer[layer])
-        for layer in diff_sum_by_layer
-        if diff_tokens_by_layer[layer] > 0
-    }
-    if layer_means:
-        plot_layer_changes(
-            layer_means,
-            n_samples=n_processed,
-            filename_prefix="routing_instability_safety_naive",
-            title="Routing Instability (Safety): Naive Per-Token Comparison — Invalid Baseline",
-        )
-    if rd_by_layer:
-        plot_rd_scatter(
-            rd_by_layer,
-            n_samples=n_processed,
-            filename_prefix="rd_scatter_safety",
-            title="Expert RD Scatter: Safe Refusal vs Unsafe Compliance",
-            label_a="Safe Refusal", label_b="Unsafe Compliance",
-            x_lim=(-1, 1),
-        )
-    if rd_logits_by_layer:
-        plot_rd_scatter(
-            rd_logits_by_layer,
-            n_samples=n_processed,
-            filename_prefix="rd_scatter_safety_logits",
-            title="Expert Logit RD Scatter: Safe Refusal vs Unsafe Compliance",
-            label_a="Safe Refusal", label_b="Unsafe Compliance",
-            log_scale=True,
-        )
-    rank_positive_rd(rd_by_layer, filename_prefix="rd_rank_safety_positive")
-    rank_negative_rd(rd_by_layer, filename_prefix="rd_rank_safety_negative")
-
     print("\nFinished all safety pairs")
 
 

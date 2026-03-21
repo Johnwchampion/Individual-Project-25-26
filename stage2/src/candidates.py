@@ -48,6 +48,32 @@ def select_candidates(rd_freq_path, rd_logit_path, n, direction="negative"):
     return candidates
 
 
+def load_rd_scores(rd_freq_path, rd_logit_path):
+    """
+    Returns {layer_index (int): {expert_idx (int): mean_rd (float)}} for all
+    experts in all layers. mean_rd is the average of frequency-based and
+    logit-based RD scores.
+
+    Used by soft mode: the full continuous RD signal is passed to ExpertSteerer
+    rather than a thresholded binary candidate set.
+    """
+    rd_freq  = _load_rd(rd_freq_path)
+    rd_logit = _load_rd(rd_logit_path)
+
+    scores = {}
+    for layer_key in rd_freq:
+        if layer_key not in rd_logit:
+            continue
+        mean_rd   = (rd_freq[layer_key] + rd_logit[layer_key]) / 2.0
+        std = mean_rd.std()
+        if std > 0:
+            mean_rd = mean_rd / std
+        layer_idx = int(layer_key.split(".")[2])
+        scores[layer_idx] = {i: float(mean_rd[i]) for i in range(len(mean_rd))}
+
+    return scores
+
+
 def summarise_candidates(candidates):
     total = sum(len(v) for v in candidates.values())
     print(f"Selected {total} (layer, expert) pairs across {len(candidates)} layers:")

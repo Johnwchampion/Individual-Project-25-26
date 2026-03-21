@@ -6,13 +6,13 @@ CLASSIFIER_MODEL_NAME = "meta-llama/Llama-Guard-3-8B"
 
 class LlamaGuardClassifier:
 
-    def __init__(self, cache_dir: str, device: str = "cuda"):
+    def __init__(self, cache_dir: str, device: str = "cpu"):
         self.device = device
         self.tokenizer = AutoTokenizer.from_pretrained(CLASSIFIER_MODEL_NAME, cache_dir=cache_dir)
         self.model = AutoModelForCausalLM.from_pretrained(
             CLASSIFIER_MODEL_NAME,
             cache_dir=cache_dir,
-            torch_dtype=torch.bfloat16,
+            dtype=torch.bfloat16,
             device_map=device,
         )
         self.model.eval()

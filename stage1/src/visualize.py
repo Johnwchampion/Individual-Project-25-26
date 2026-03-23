@@ -13,39 +13,6 @@ PLOT_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "plots")
 os.makedirs(PLOT_DIR, exist_ok=True)
 
 
-def compute_layer_token_differences(routing_with, routing_without, return_counts=False):
-    layer_results = {}
-
-    for layer in routing_with.keys():
-
-        if layer not in routing_without:
-            continue
-
-        flat_with = routing_with[layer]
-        flat_without = routing_without[layer]
-
-        T = len(flat_with) // TOP_K
-        total_diff = 0
-
-        for t in range(T):
-            start = t * TOP_K
-            end = start + TOP_K
-
-            set_with = set(flat_with[start:end])
-            set_without = set(flat_without[start:end])
-
-            overlap = len(set_with.intersection(set_without))
-            diff = TOP_K - overlap
-
-            total_diff += diff
-
-        if return_counts:
-            layer_results[layer] = (total_diff, T)
-        else:
-            layer_results[layer] = total_diff / T
-
-    return layer_results
-
 
 def plot_layer_changes(layer_means, n_samples=None, filename_prefix="routing_instability", title="Routing Instability: Context vs No Context"):
     # Sort layers numerically

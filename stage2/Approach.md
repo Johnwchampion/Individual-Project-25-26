@@ -39,21 +39,29 @@ Both directions are evaluated because `candidates.py` already supports a `direct
 
 ## Why Steering is Performed at the Router Level
 
-MoE models use a router to compute a score for each expert and select the top-k. Steering interventions operate at the **pre-softmax logit level** inside the gate module, modifying raw scores before any top-k decision is made. This influences **which experts participate in computation** without modifying the experts themselves.
+MoE models use a router to compute a score for each expert and select the top-k. Steering interventions target the gate module, influencing **which experts participate in computation** without modifying expert weights. Two architecturally distinct modes are used.
 
 ---
 
 ## Hard Expert Deactivation
 
-Hard deactivation assigns a score of −1e9 to selected experts, ensuring they never appear in the top-k. The router must select alternatives.
+Hard mode uses a two-hook architecture on each targeted gate. A pre-hook caches `log_softmax` of the gate's raw router logits. A post-hook intercepts the gate's output `(topk_idx, topk_weight, aux_loss)` and replaces any suppressed expert that was selected with the highest-scoring non-suppressed alternative from the cached scores. Weights for modified tokens are recomputed via softmax over the replacement set. Exactly k=6 experts always contribute; only the identity of selected experts changes for tokens where a suppressed expert would have appeared.
 
-This tests a **causal necessity hypothesis**: if these experts are necessary for a behaviour, removing them should significantly alter that behaviour.
+This tests a **causal necessity hypothesis**: if these experts are necessary for a behaviour, replacing them with alternatives should significantly alter that behaviour.
 
 ---
 
 ## Soft Expert Suppression
 
-Soft suppression shifts expert scores downward by a controllable **strength parameter**, making them less competitive without guaranteeing exclusion. This tests **behavioural sensitivity**: how strongly does behaviour depend on these experts as routing is progressively biased away from them?
+Soft mode operates pre-selection via pseudoinverse perturbation. A hidden-state delta `δh` is precomputed once per targeted gate as the minimum-norm solution to:
+
+```
+F.linear(h + δh, W) = F.linear(h, W) + δ_logit
+```
+
+where `δ_logit[i] = SOFT_STRENGTH × RD_score[i]`. A pre-hook adds `δh` to the gate's input before routing. The gate's grouped top-k then executes normally on shifted logits — always k=6 with natural, in-distribution weights. Positive strength suppresses low-RD (unsafe/context-ignoring) experts; negative strength reverses the direction.
+
+This tests **behavioural sensitivity**: how strongly does behaviour depend on these experts as routing is continuously biased away from them?
 
 ---
 
@@ -69,12 +77,14 @@ Hard and soft steering answer different questions. Hard deactivation tests causa
 
 Safety outputs are classified by **Llama-Guard-3-8B** (the same model used in the SteerMoE paper), which is feasible given the 20–30 GB GPU allocation on AIRE. Benchmarks:
 
-| Benchmark | Purpose |
-|---|---|
-| AdvBench | Core harmful-prompt evaluation |
-| TDC2023 | Safe steering control condition |
-| HH-RLHF Harmless | Benign baseline (should not be refused) |
-| StrongREJECT + AIM jailbreak | Unsafe steering contrastive condition |
+| Benchmark | Purpose | Status |
+|---|---|---|
+| AdvBench | Core harmful-prompt evaluation | Implemented |
+| TDC2023 | Safe steering control condition | Planned |
+| HH-RLHF Harmless | Benign baseline (should not be refused) | Planned |
+| StrongREJECT + AIM jailbreak | Unsafe steering contrastive condition | Planned |
+
+Current experiments use AdvBench only (`walledai/AdvBench`, 520 harmful prompts). The additional benchmarks are identified as future extensions to strengthen the evaluation.
 
 ### Faithfulness
 

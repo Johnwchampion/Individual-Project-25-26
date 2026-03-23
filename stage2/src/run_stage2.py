@@ -132,12 +132,12 @@ def _extract_mcq_letter(text):
 
 def run_safety_batch(model, tokenizer, classifier, prompts, gen_fn, candidates, mode, strength, verbose=False):
     steerer = ExpertSteerer(model, candidates, mode=mode, strength=strength) if candidates else None
-    results = []
+    records = []
     try:
         for p in tqdm(prompts, desc="prompts", leave=False):
             response = gen_fn(model, tokenizer, p)
             label = classifier.classify(p, response)
-            results.append(label)
+            records.append({"prompt": p, "response": response, **label})
             if verbose:
                 print(f"\n--- PROMPT ---\n{p}")
                 print(f"--- RESPONSE ---\n{response}")
@@ -145,7 +145,7 @@ def run_safety_batch(model, tokenizer, classifier, prompts, gen_fn, candidates, 
     finally:
         if steerer:
             steerer.remove()
-    return results
+    return records
 
 
 def run_faith_batch(model, tokenizer, records, candidates, mode, strength):
@@ -172,6 +172,16 @@ def _load_existing(path):
         with open(path) as f:
             return json.load(f)
     return {"safety": {"safe_steering": {}, "unsafe_steering": {}}, "faithfulness": {}}
+
+
+def _safe_rate_from(results, task, subtask, condition):
+    """Extract safe_rate from either new format {records, safe_rate} or legacy float."""
+    val = results.get(task, {}).get(subtask, {}).get(condition)
+    if val is None:
+        return None
+    if isinstance(val, dict):
+        return val["safe_rate"]
+    return val  # legacy float
 
 
 def _build_conditions(selected_conditions, safety_neg, safety_pos, faith_neg,
@@ -257,18 +267,18 @@ def main():
         print("\nSafety: safe steering (forced prefix)...")
         for name, cands, mode, strength in safe_conds:
             print(f"  [{name}] running...")
-            clf = run_safety_batch(model, tokenizer, classifier, safety_prompts, generate_forced, cands, mode, strength, verbose=verbose)
-            results["safety"]["safe_steering"][name] = safe_rate(clf)
-            print(f"  [{name}] safe_rate: {results['safety']['safe_steering'][name]:.3f}")
+            records = run_safety_batch(model, tokenizer, classifier, safety_prompts, generate_forced, cands, mode, strength, verbose=verbose)
+            results["safety"]["safe_steering"][name] = {"records": records, "safe_rate": safe_rate(records)}
+            print(f"  [{name}] safe_rate: {results['safety']['safe_steering'][name]['safe_rate']:.3f}")
         _save(results, out_path)
 
     if "safety_unsafe" in tasks:
         print("\nSafety: unsafe steering (safety system prompt)...")
         for name, cands, mode, strength in unsafe_conds:
             print(f"  [{name}] running...")
-            clf = run_safety_batch(model, tokenizer, classifier, safety_prompts, generate_safe_sp, cands, mode, strength, verbose=verbose)
-            results["safety"]["unsafe_steering"][name] = safe_rate(clf)
-            print(f"  [{name}] safe_rate: {results['safety']['unsafe_steering'][name]:.3f}")
+            records = run_safety_batch(model, tokenizer, classifier, safety_prompts, generate_safe_sp, cands, mode, strength, verbose=verbose)
+            results["safety"]["unsafe_steering"][name] = {"records": records, "safe_rate": safe_rate(records)}
+            print(f"  [{name}] safe_rate: {results['safety']['unsafe_steering'][name]['safe_rate']:.3f}")
         _save(results, out_path)
 
     faith_task_map = [

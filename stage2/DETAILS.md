@@ -6,36 +6,31 @@ Specifics not covered in README or Approach.md. Reference for running, debugging
 
 ## results.json Structure
 
-All Stage 2 results are written to `/scratch/sc23jc3/stage2_results/results.json`. The file contains **one float per condition** — the mean score across all N prompts in that batch. Individual generations are never saved.
+All Stage 2 results are written to `/scratch/sc23jc3/stage2_results/results.json`. Safety conditions store **full per-prompt records** alongside the aggregate metric. Faithfulness conditions store the aggregate score only (individual predictions are not saved).
 
 ```json
 {
   "safety": {
     "safe_steering": {
-      "baseline": 0.020,
-      "hard": 0.340
+      "baseline": {"records": [{"prompt": "...", "response": "...", "safe": false, "category": "S2"}, ...], "safe_rate": 0.020},
+      "hard":     {"records": [...], "safe_rate": 0.340},
+      "soft":     {"records": [...], "safe_rate": 0.060}
     },
     "unsafe_steering": {
-      "baseline": 0.950,
-      "hard": 0.610
+      "baseline": {"records": [...], "safe_rate": 0.950},
+      "hard":     {"records": [...], "safe_rate": 0.610},
+      "soft":     {"records": [...], "safe_rate": 0.845}
     }
   },
   "faithfulness": {
-    "counterfactual": {
-      "baseline": 0.450,
-      "hard": 0.520
-    },
-    "unanswerable": {
-      "baseline": 0.310,
-      "hard": 0.280
-    },
-    "mctest": {
-      "baseline": 0.710,
-      "hard": 0.690
-    }
+    "counterfactual": {"baseline": 0.450, "hard": 0.520, "soft": 0.510},
+    "unanswerable":   {"baseline": 0.310, "hard": 0.280, "soft": 0.290},
+    "mctest":         {"baseline": 0.710, "hard": 0.690, "soft": 0.700}
   }
 }
 ```
+
+Each safety record has the shape: `{"prompt": str, "response": str, "safe": bool, "category": str | null}`.
 
 The file is written **incrementally** — after each task completes, results are merged and saved. A crash mid-run preserves already-completed results.
 
@@ -44,14 +39,17 @@ The file is written **incrementally** — after each task completes, results are
 ## run_stage2.py CLI
 
 ```bash
-python src/run_stage2.py [--tasks ...] [--conditions ...] [--n N]
+python src/run_stage2.py [--tasks ...] [--conditions ...] [--n N] [--candidate_n N] [--soft_strength F] [--verbose]
 ```
 
 | Flag | Choices | Default | Effect |
 |---|---|---|---|
 | `--tasks` | `safety_safe`, `safety_unsafe`, `faith_cf`, `faith_un`, `faith_mc` | all 5 | Which experiments to run |
-| `--conditions` | `baseline`, `hard` | both | Which steering conditions to run |
+| `--conditions` | `baseline`, `hard`, `soft` | all 3 | Which steering conditions to run |
 | `--n` | any int | 100 | Number of prompts per dataset |
+| `--candidate_n` | any int | `CANDIDATE_N` from config (3) | Override top-N experts per metric before intersection |
+| `--soft_strength` | any float | `SOFT_STRENGTH` from config (0.5) | Override logit-shift scale for soft mode |
+| `--verbose` | flag | off | Print each prompt, response, and classification |
 
 Tasks map to:
 - `safety_safe` → Safe steering (forced prefix condition)
@@ -106,18 +104,44 @@ Llama-Guard-3-8B runs on **CPU**. This is because DeepSeek-V2-Lite-Chat occupies
 
 ## ExpertSteerer Hook
 
-### What it does now (correct approach)
+### Hard mode — two-hook architecture
 
-`intervene.py` registers a post-forward hook on each MoE gate module. The gate runs its full forward pass (including DeepSeek's grouped top-k selection) and returns `(topk_idx, topk_weight, aux_loss)`. The hook then:
+`intervene.py` registers two hooks per targeted gate:
 
-1. Clones `topk_weight`
-2. For each suppressed expert that appears in `topk_idx`, scales its weight down:
-   - **Hard mode**: weight → 0 (expert contributes nothing to the output)
-   - **Soft mode**: weight *= `(1 - alpha)` where `alpha = SOFT_STRENGTH / (SOFT_STRENGTH + 1)` ≈ 0.968 at default strength 30.0
-3. Renormalises remaining weights so they sum to 1
-4. Returns the modified `(topk_idx, topk_weight, aux_loss)`
+**Pre-hook** (runs before the gate's forward pass):
+1. Extracts the gate's input hidden states `h`
+2. Recomputes router logits: `logits = F.linear(h_flat, module.weight)`
+3. Caches `log_softmax(logits)` on the module as `_cached_log_scores` — a `[n_tokens, n_experts]` tensor available to the post-hook
 
-The suppressed expert may still appear in `topk_idx` (it was selected by the router), but since its weight is 0 (hard) or near-0 (soft), it contributes nothing to the MoE output mixture. Model weights are never modified — steering is purely at inference time.
+**Post-hook** (runs after the gate's grouped top-k selection):
+1. Intercepts `(topk_idx, topk_weight, aux_loss)`
+2. Identifies tokens where any suppressed expert appears in `topk_idx`
+3. For those tokens only: masks suppressed experts to `−inf` in cached scores, takes top-k over the remaining experts, recomputes softmax weights over the replacement set
+4. Returns `(new_topk_idx, new_topk_weight, aux_loss)` — unchanged for unaffected tokens
+
+Result: exactly k=6 experts always contribute per token; only tokens where a suppressed expert was selected are modified; weights are natural softmax values from a valid top-k selection.
+
+### Soft mode — pre-selection via pseudoinverse
+
+A single pre-hook per targeted gate. At `ExpertSteerer` initialisation, `δh` is precomputed once:
+
+```python
+W           = gate.weight.data.float()          # [n_experts, d_model]
+delta_logit = torch.zeros(n_experts)
+for ei, rd in rd_scores.items():
+    delta_logit[ei] = strength * rd
+
+WWT     = W @ W.T                               # [n_experts, n_experts]
+WWT_inv = torch.linalg.inv(WWT)
+delta_h = delta_logit @ WWT_inv @ W             # [d_model]
+```
+
+The pre-hook adds `δh` to the hidden state before the gate runs:
+```python
+return (h + delta_h,) + args[1:]
+```
+
+The gate then executes its full grouped top-k on the shifted logits. Result: always k=6 experts with natural, in-distribution weights. Model weights are never modified — steering is purely at inference time.
 
 ### The original broken approach and why it failed
 
@@ -339,61 +363,13 @@ generate a lot of interest or controversy...
 
 ---
 
-## SOFT_STRENGTH: Mathematical Calibration
+## SOFT_STRENGTH: Calibration
 
-`SOFT_STRENGTH` is the multiplier applied to each expert's normalised RD score to produce the logit shift. The normalised RD scores have std=1 per layer; the maximum across 64 experts follows the extreme-value distribution of the standard normal, giving `max(|r_i|) ≈ 2.5–3.0` in expectation.
+`SOFT_STRENGTH` is the multiplier applied to each expert's normalised RD score to produce the logit shift `δ_logit[i] = strength × r_i`.
 
-### Coherence ceiling
+### Empirical calibration (2026-03-21) — primary reference
 
-Degeneration occurs when the logit shift for an extreme expert exceeds the routing margin between the rank-6 and rank-7 expert. This margin is approximately **0.5–1.5 nats** in a trained MoE with balanced routing (small margin = easy for two experts to compete; large margin = decisive routing).
-
-```
-strength × max(|r_i|) < margin
-strength × 3.0        < 0.5–1.5
-strength              < 0.17–0.50
-```
-
-**Coherence ceiling: approximately 0.35** (using the geometric centre of the range).
-
-### Detectability floor
-
-Within the already-selected k experts, the weight shift for expert i from the softmax Jacobian is:
-
-```
-Δw_i ≈ strength × (r_i − r̄_w) × w_i × (1 − w_i)
-```
-
-where `r̄_w` is the routing-weighted mean RD of the selected set. For uniform initial weights `w_i ≈ 1/6`:
-
-```
-Δw_i ≈ strength × r_i × 0.167 × 0.833 ≈ 0.139 × strength × r_i
-```
-
-For the most extreme expert (`|r_i| = 2.5`):
-
-```
-Δw_i ≈ 0.35 × strength
-```
-
-For a detectable per-layer behavioural signal, a threshold of `Δw_i > 5%` is reasonable:
-
-```
-0.35 × strength > 0.05  →  strength > 0.14
-```
-
-**Detectability floor: approximately 0.14.**
-
-### Recommended value
-
-```
-feasible range:       [0.14, 0.35]  (theoretical estimate)
-geometric centre:     √(0.14 × 0.35) ≈ 0.22
-theoretical rec.:     0.3  (near ceiling, maximises signal while preserving coherence)
-```
-
-### Empirical calibration (2026-03-21)
-
-The theoretical coherence ceiling of ~0.35 was conservative. Empirical testing on `safety_safe` with n=3 and `--verbose`:
+Tested on `safety_safe` with n=3 and `--verbose`:
 
 | strength | output quality | safe_rate (n=3) |
 |---|---|---|
@@ -401,11 +377,37 @@ The theoretical coherence ceiling of ~0.35 was conservative. Empirical testing o
 | 0.5 | fully fluent, slightly unusual phrasing | 0.333 |
 | 0.3 | fully fluent, natural phrasing | 0.000 |
 
-**Key finding**: strength=0.5 is above the theoretical ceiling but remains fully fluent. The actual routing margin between rank-6 and rank-7 experts is larger than the conservative 0.5–1.5 nat estimate — likely closer to 1.5–2.5 nats. The revised coherence ceiling is empirically at least 0.5.
-
-More importantly, strength=0.3 is fluent but produces *zero* steering effect (safe_rate identical to unsafe baseline), while strength=0.5 matches hard mode's n=3 safe_rate of 0.333. The threshold for detectable behavioural change lies between 0.3 and 0.5. The difference is stark on prompt 2 (self-harm): at 0.3 the model gives detailed cutting instructions; at 0.5 it pivots entirely to harm reduction.
+**Key finding**: strength=0.3 produces fluent output but zero steering effect (safe_rate identical to unsafe baseline). Strength=0.5 produces fluent output and matches hard mode's safe_rate of 0.333 at n=3. The threshold for detectable behavioural change lies between 0.3 and 0.5. The difference is stark on the self-harm prompt: at 0.3 the model gives detailed instructions; at 0.5 it pivots entirely to harm reduction.
 
 **Current default: `SOFT_STRENGTH=0.5`** — the lowest confirmed value that produces a detectable steering effect while maintaining full output fluency.
+
+### Mathematical derivation — supporting context
+
+The normalised RD scores have std=1 per layer; the maximum across 64 experts follows the extreme-value distribution of the standard normal, giving `max(|r_i|) ≈ 2.5–3.0`.
+
+**Coherence ceiling** — degeneration occurs when the logit shift for an extreme expert exceeds the routing margin between rank-6 and rank-7:
+
+```
+strength × max(|r_i|) < margin
+strength × 3.0        < 0.5–1.5   (estimated margin range)
+strength              < 0.17–0.50
+```
+
+Theoretical ceiling: ~0.35 (geometric centre). Empirically, 0.5 remains fully fluent, suggesting the actual margin is closer to 1.5–2.5 nats.
+
+**Detectability floor** — from the softmax Jacobian, the weight shift for expert i in the already-selected set is:
+
+```
+Δw_i ≈ 0.139 × strength × r_i   (for uniform initial weights w_i ≈ 1/6)
+```
+
+For `Δw_i > 5%` on the most extreme expert (`|r_i| = 2.5`): `strength > 0.14`.
+
+```
+theoretical feasible range:  [0.14, 0.35]
+geometric centre:             √(0.14 × 0.35) ≈ 0.22
+empirically validated value:  0.5  (above theoretical ceiling; actual margin is wider)
+```
 
 ---
 

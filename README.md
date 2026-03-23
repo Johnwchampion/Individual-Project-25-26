@@ -88,7 +88,7 @@ Stage 2 takes the RD results from Stage 1 and tests causal influence by suppress
 
 ### Candidate Selection
 
-Experts are selected per layer by taking the top-N by |RD| on **both** frequency and logit metrics, then keeping only those in the **intersection**. This ensures selected experts are both consistently activated and consistently preferred at the logit level. `N` is set by `CANDIDATE_N` in `stage2/src/config.py` (default: 10).
+Experts are selected per layer by taking the top-N by |RD| on **both** frequency and logit metrics, then keeping only those in the **intersection**. This ensures selected experts are both consistently activated and consistently preferred at the logit level. `N` is set by `CANDIDATE_N` in `stage2/src/config.py` (default: 3).
 
 Two candidate sets are selected for safety, one for faithfulness:
 - `safety_neg` — experts with the most negative safety RD (associated with harmful compliance)
@@ -97,12 +97,12 @@ Two candidate sets are selected for safety, one for faithfulness:
 
 ### Intervention Mechanism
 
-`ExpertSteerer` (`stage2/src/intervene.py`) registers forward hooks on each targeted MoE gate module. Before the router's top-k selection, the hook intercepts the raw logits and modifies them:
+`ExpertSteerer` (`stage2/src/intervene.py`) registers forward hooks on each targeted MoE gate module. Two modes are supported:
 
-- **Hard deactivation**: set expert logit to −1e9 → expert is never selected
-- **Soft suppression**: subtract `SOFT_STRENGTH` (default: 30.0) from expert logit → expert is less competitive but not excluded
+- **Hard deactivation**: a two-hook architecture. A pre-hook caches `log_softmax` of the gate's raw router logits. A post-hook intercepts `(topk_idx, topk_weight, aux_loss)` and replaces any suppressed expert that was selected with the highest-scoring non-suppressed alternative from the cached scores. Weights are recomputed via softmax over the replacement set. Exactly k=6 experts always contribute with natural, in-distribution weights — only the identity of selected experts changes.
+- **Soft suppression**: pre-selection via pseudoinverse perturbation. A hidden-state delta `δh` is precomputed as the minimum-norm solution to `F.linear(h + δh, W) = F.linear(h, W) + δ_logit`, where `δ_logit[i] = SOFT_STRENGTH × RD_score[i]`. A pre-hook adds `δh` to the gate's input hidden state before any routing occurs. The gate's grouped top-k then executes normally on the shifted logits — always k=6 with natural weights. `SOFT_STRENGTH` defaults to 0.5, empirically validated as the minimum value producing a detectable steering effect while preserving full output fluency.
 
-Hooks are registered once for the whole batch and removed via `.remove()` when done.
+Hooks are registered once per generation and removed via `.remove()` when done.
 
 ### Evaluation
 
@@ -151,8 +151,12 @@ stage1/
     dataset.py                ChatRecord / ChatPair / SafetyPair dataclasses and JSONL loader
     model.py                  load_model() and generate() utilities
     routing.py                RouterTracer — hooks MoE gates, records top-k experts and logits
-    visualize.py              RD computation, expert ranking, scatter plots, heatmaps, CSV export
+    rd_utils.py               RD computation utilities shared across Stage 1 and analysis
+    visualize.py              Expert ranking, scatter plots, heatmaps, CSV export
     run_stage1.py             Main Stage 1 orchestration (faithfulness + safety pipelines)
+  analysis/
+    01_rd_faithfulness.ipynb  RD results and visualisations for faithfulness pipeline
+    02_rd_safety.ipynb        RD results and visualisations for safety pipeline
   demo/
     build_dataset.ipynb       Demo: dataset construction walkthrough
     switch_demo.ipynb         Demo: routing switching visualisation
@@ -166,11 +170,17 @@ stage2/
   src/
     config.py                 Stage 2 settings (CANDIDATE_N, SOFT_STRENGTH, MAX_NEW_TOKENS, RESULTS_DIR)
     candidates.py             Expert candidate selection via intersection of top-N on both RD metrics
-    intervene.py              ExpertSteerer — forward hooks for hard/soft expert suppression
+    intervene.py              ExpertSteerer — two-hook hard mode and pseudoinverse soft mode
     classify.py               LlamaGuardClassifier — wraps Llama-Guard-3-8B for safe/unsafe judgement
     evaluate.py               Metric functions: safe_rate, faithfulness exact-match variants
     run_stage2.py             Main Stage 2 orchestration (all conditions, all benchmarks)
+  analysis/
+    01_safety_results.ipynb   Safety steering results: safe_rate across conditions and directions
+    02_faithfulness_results.ipynb  Faithfulness steering results across benchmarks and conditions
+    03_combined_analysis.ipynb     Combined summary and effect-size analysis
   Approach.md                 Detailed methodology notes for Stage 2
+  DETAILS.md                  Implementation details: hooks, config, scoring, and calibration
+  run_safety.sh               SLURM batch script for safety experiments (n=50, all conditions)
 
 Setup.md                      AIRE HPC cluster setup and environment notes
 ```

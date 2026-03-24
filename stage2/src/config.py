@@ -25,7 +25,7 @@ SOFT_STRENGTH = 0.5        # logit shift scale for soft pre-selection; empirical
 MAX_NEW_TOKENS = 150
 
 # Results output
-RESULTS_DIR = "/scratch/sc23jc3/stage2_results"
+RESULTS_DIR = os.path.join(os.path.dirname(__file__), "..", "results")
 
 __all__ = [
     "SAFETY_MODEL_NAME", "CACHE_DIR",

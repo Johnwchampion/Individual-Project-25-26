@@ -10,13 +10,11 @@ def _load_rd(path):
 
 def select_candidates(rd_freq_path, rd_logit_path, n, direction="negative"):
     """
-    Returns {layer_index (int): [expert_indices]} for experts that appear in
-    the top-N by |RD| in the given direction on BOTH frequency and logit metrics.
+    Returns {layer_index: [expert_indices]} for experts in the top-N by |RD|
+    on both frequency and logit metrics (intersection).
 
-    direction="negative": suppress experts preferred in condition B
-                          (unsafe compliance / context-ignoring)
-    direction="positive": suppress experts preferred in condition A
-                          (safe refusal / context-faithful)
+    direction="negative" targets experts preferred under unsafe/context-ignoring
+    conditions; direction="positive" targets safe/faithful-preferring experts.
     """
     rd_freq  = _load_rd(rd_freq_path)
     rd_logit = _load_rd(rd_logit_path)
@@ -50,12 +48,9 @@ def select_candidates(rd_freq_path, rd_logit_path, n, direction="negative"):
 
 def load_rd_scores(rd_freq_path, rd_logit_path):
     """
-    Returns {layer_index (int): {expert_idx (int): mean_rd (float)}} for all
-    experts in all layers. mean_rd is the average of frequency-based and
-    logit-based RD scores.
-
-    Used by soft mode: the full continuous RD signal is passed to ExpertSteerer
-    rather than a thresholded binary candidate set.
+    Returns {layer_index: {expert_idx: mean_rd}} for all experts across all
+    layers, where mean_rd is the normalised average of frequency and logit RD.
+    Used by soft mode to pass the continuous signal to ExpertSteerer.
     """
     rd_freq  = _load_rd(rd_freq_path)
     rd_logit = _load_rd(rd_logit_path)

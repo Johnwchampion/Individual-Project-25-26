@@ -94,9 +94,7 @@ def sample_pairs(pairs: List[ChatPair], n: int) -> List[ChatPair]:
 	return pairs[:n]
 
 
-# ---------------------------------------------------------------------------
 # Safety pipeline types and loaders
-# ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
 class SafetyPair:

@@ -81,10 +81,7 @@ class RouterTracer:
             self._hooks.append(hook)
 
     def _get_transformer(self) -> torch.nn.Module:
-        """
-        HF causal LM wrappers typically expose the transformer as model.model.
-        We keep this minimal but explicit.
-        """
+        """Returns model.model (the transformer body inside the HF causal LM wrapper)."""
         if hasattr(self._model, "model"):
             return getattr(self._model, "model")
         raise RuntimeError("Unexpected model structure: top-level model missing .model")
@@ -107,15 +104,7 @@ class RouterTracer:
         return hook
 
     def _extract_expert_indices(self, outputs: Any) -> Optional[List[int]]:
-        """
-        Extract expert indices from the router output.
-
-        Current conservative strategy:
-        - Look for an integer tensor in outputs (int32/int64).
-        - Convert the last row (if 2D+) to a flat Python list.
-
-        This matches what we've observed for model.layers.X.mlp.gate.
-        """
+        """Finds the first int32/int64 tensor in the gate output and returns it as a flat list."""
         tensors: List[torch.Tensor] = []
 
         if isinstance(outputs, (list, tuple)):
@@ -149,18 +138,7 @@ class RouterTracer:
                 "logit_scores": event.logit_scores}
 
     def _extract_logits(self, module: torch.nn.Module, inputs: Tuple[Any, ...]) -> List[List[float]]:
-        """
-        Recompute raw pre-softmax logits for all experts.
-
-        The gate internally does:
-            logits = F.linear(hidden_states, self.weight)  # [seq_len, n_experts]
-            scores = softmax(logits)
-            topk   = scores.topk(6)
-
-        We replicate only the first line using the gate's weight and the hidden
-        states from _inputs[0], giving us the full competition scores before any
-        expert is selected.
-        """
+        """Recomputes pre-softmax gate logits for all experts using F.linear(hidden, weight)."""
         if not hasattr(module, "weight") or not inputs:
             return []
         hidden = inputs[0]

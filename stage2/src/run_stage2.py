@@ -23,7 +23,7 @@ from config import (
 from candidates import select_candidates, load_rd_scores
 from intervene import ExpertSteerer
 from classify import LlamaGuardClassifier
-from load_safety import load_advbench, load_hh_harmless, FORCED_PREFIX, SAFETY_SYSTEM_PROMPT
+from load_safety import load_advbench, FORCED_PREFIX, SAFETY_SYSTEM_PROMPT
 from load_faith import (
     load_faitheval_counterfactual,
     load_faitheval_unanswerable,
@@ -76,9 +76,7 @@ def parse_args():
     )
 
 
-# ---------------------------------------------------------------------------
 # Generation
-# ---------------------------------------------------------------------------
 
 def _generate(model, tokenizer, input_ids):
     with torch.no_grad():
@@ -167,9 +165,7 @@ def _faith_correct(pred, gold, options):
         return _normalise(pred) == _normalise(str(gold))
 
 
-# ---------------------------------------------------------------------------
 # Per-condition file I/O
-# ---------------------------------------------------------------------------
 
 def _condition_path(results_dir, task, condition):
     return os.path.join(results_dir, task, f"{condition}.json")
@@ -261,9 +257,7 @@ def _annotate_mismatches(results_dir, task, cond, mismatch_key):
     print(f"  [{cond}] mismatches vs baseline: {len(mismatch_idxs)}/{len(data['records'])}")
 
 
-# ---------------------------------------------------------------------------
 # Aggregate metrics from record lists
-# ---------------------------------------------------------------------------
 
 def _safe_rate_from_records(records):
     if not records:
@@ -283,9 +277,7 @@ def _mean_length_from_records(records):
     return sum(len(r["response"].split()) for r in records) / len(records)
 
 
-# ---------------------------------------------------------------------------
 # Batch runners
-# ---------------------------------------------------------------------------
 
 def run_safety_batch(
     model, tokenizer, classifier, prompts, gen_fn,
@@ -359,9 +351,7 @@ def run_fluency_batch(
     return records
 
 
-# ---------------------------------------------------------------------------
 # Condition builder
-# ---------------------------------------------------------------------------
 
 def _build_conditions(selected_conditions, safety_neg, safety_pos, faith_neg,
                        safety_scores, faith_scores, strength):
@@ -388,9 +378,7 @@ def _build_conditions(selected_conditions, safety_neg, safety_pos, faith_neg,
     return filt(all_safe), filt(all_unsafe), filt(all_faith)
 
 
-# ---------------------------------------------------------------------------
 # Main
-# ---------------------------------------------------------------------------
 
 def main():
     tasks, conditions, n, candidate_n_override, soft_strength_override, results_dir_override, verbose, skip_done = parse_args()
@@ -432,7 +420,7 @@ def main():
 
     print("Loading datasets...")
     safety_prompts  = load_advbench(n=n)    if any(t in tasks for t in ["safety_safe", "safety_unsafe"]) else []
-    fluency_prompts = load_hh_harmless(n=n) if "fluency" in tasks else []
+    fluency_prompts = []  # fluency task requires HH-RLHF loader — not yet implemented
     cf_records      = load_faitheval_counterfactual(n=n) if "faith_cf" in tasks else []
     un_records      = load_faitheval_unanswerable(n=n)   if "faith_un" in tasks else []
     mc_records      = load_mctest(n=n)                   if "faith_mc" in tasks else []

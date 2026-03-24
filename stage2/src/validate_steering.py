@@ -1,19 +1,12 @@
 #!/usr/bin/env python3
 """
-validate_steering.py  —  Mechanistic validation of ExpertSteerer hooks.
+Mechanistic validation of ExpertSteerer hooks.
 
-Runs N=50 prompts drawn from the actual experimental datasets in three
-conditions (baseline / hard / soft) and records, for every targeted
-(layer, expert) pair:
-
-  Hard check  :  routing_rate == 0.0  (expert never selected post-hook)
-  Soft check  :  routing_rate < baseline_rate (or both == 0)
-                 actual_logit_shift  ≈  expected_shift  (strength × RD score)
-
-Safety axis   : AdvBench prompts with forced harmful prefix  (mirrors safety_safe task)
-Faithfulness  : FaithEval-Counterfactual prompts with context (mirrors faith_cf task)
-
-Output  :  stage2/validation_result.json
+Runs 200 prompts from the actual experimental datasets (AdvBench forced prefix
+for safety, FaithEval-Counterfactual for faithfulness) under baseline, hard,
+and soft conditions. For each targeted (layer, expert) pair, checks that
+hard steering drives routing rate to zero and soft steering reduces it relative
+to baseline. Writes results to stage2/validation_result.json.
 """
 
 import sys
@@ -43,9 +36,7 @@ OUTPUT_PATH = os.path.join(_HERE, "..", "validation_result.json")
 N = 200
 
 
-# ---------------------------------------------------------------------------
 # Input preparation — mirrors run_stage2.py tokenisation exactly
-# ---------------------------------------------------------------------------
 
 def _safety_neg_input_ids(model, tokenizer, prompts):
     """AdvBench prompts with forced harmful prefix — mirrors generate_forced (safety_safe task).
@@ -106,9 +97,7 @@ def _faith_input_ids(model, tokenizer, records):
     return ids_list
 
 
-# ---------------------------------------------------------------------------
 # Routing data collection
-# ---------------------------------------------------------------------------
 
 def collect_routing_stats(model, ids_list):
     """
@@ -191,9 +180,7 @@ def _mean_logit(stats, layer_idx, expert_idx):
     return logits[expert_idx] if expert_idx < len(logits) else float("nan")
 
 
-# ---------------------------------------------------------------------------
 # Per-axis validation
-# ---------------------------------------------------------------------------
 
 def validate_axis(model, ids_list, hard_candidates, soft_rd_scores, strength, label, direction, dataset):
     n_candidates = sum(len(v) for v in hard_candidates.values())
@@ -244,9 +231,7 @@ def validate_axis(model, ids_list, hard_candidates, soft_rd_scores, strength, la
     return layers_result
 
 
-# ---------------------------------------------------------------------------
 # Main
-# ---------------------------------------------------------------------------
 
 def main():
     print(f"Loading model: {SAFETY_MODEL_NAME}")

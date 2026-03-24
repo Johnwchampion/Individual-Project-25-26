@@ -4,37 +4,18 @@ import torch.nn.functional as F
 
 class ExpertSteerer:
     """
-    Expert steering for DeepSeek-V2's MoE gates.
+    Attaches inference-time hooks to DeepSeek-V2's MoE gates to suppress
+    or reweight targeted experts.
 
-    Hard mode (candidates: {layer: [expert_indices]}):
-        Two-hook architecture. A pre-hook caches the gate's log-softmax routing
-        scores. An output hook intercepts (topk_idx, topk_weight, aux_loss) and
-        replaces any suppressed expert that was selected with the
-        highest-scoring non-suppressed alternative from the cached scores.
-        Weights are recomputed via softmax over the replacement experts' scores.
-        Exactly k experts always contribute. Only tokens that had a suppressed
-        expert selected are modified; all other tokens are untouched.
+    Hard mode: a pre-hook caches log-softmax scores; an output hook intercepts
+    (topk_idx, topk_weight) and replaces any suppressed expert with the
+    next-best alternative. Exactly k experts always contribute.
 
-    Soft mode (candidates: {layer: {expert_idx: rd_score}}):
-        Pre-selection only. The desired logit shift δ_logit[i] = strength * Δi
-        is injected by perturbing the gate's input hidden state h before the
-        gate runs. The perturbation δh is precomputed as the minimum-norm
-        solution to F.linear(h + δh, W) = F.linear(h, W) + δ_logit, which is:
+    Soft mode: precomputes δh = δ_logit @ (WWᵀ)⁻¹ @ W and adds it to the
+    gate's input before routing, shifting logits by strength * RD score per
+    expert. The gate's grouped top-k runs normally on the shifted distribution.
 
-            δh = δ_logit @ (W Wᵀ)⁻¹ @ W
-
-        The gate's grouped top-k then runs normally on the shifted logits.
-        Always k experts with natural, in-distribution weights. Positive
-        strength boosts high-RD (safe/faithful) experts; negative reverses.
-
-    Usage:
-        steerer = ExpertSteerer(model, candidates, mode="hard")
-        output  = generate(model, tokenizer, messages)
-        steerer.remove()
-
-        # or as a context manager:
-        with ExpertSteerer(model, candidates, mode="hard"):
-            output = generate(model, tokenizer, messages)
+    Call steerer.remove() when done, or use as a context manager.
     """
 
     def __init__(self, model, candidates, mode="hard", strength=1.0):

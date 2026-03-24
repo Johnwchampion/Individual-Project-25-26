@@ -1,4 +1,4 @@
-# --- Faithfulness pipeline (SQuAD) ---
+# Faithfulness pipeline (SQuAD)
 MODEL_NAME = "deepseek-ai/DeepSeek-V2-Lite"
 CACHE_DIR = "/scratch/sc23jc3/cache"
 DATA_DIR = "/scratch/sc23jc3/squad_prepared"

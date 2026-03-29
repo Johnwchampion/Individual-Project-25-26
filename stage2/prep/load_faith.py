@@ -24,48 +24,31 @@ def load_faitheval_counterfactual(n: Optional[int] = None, cache_dir: str = CACH
     return records
 
 
-def load_faitheval_unanswerable(n: Optional[int] = None, cache_dir: str = CACHE_DIR, seed: int = 42) -> list[dict]:
-    ds = load_dataset("Salesforce/FaithEval-unanswerable-v1.0", split="test", cache_dir=cache_dir)
+
+def load_race(n: Optional[int] = None, cache_dir: str = CACHE_DIR, seed: int = 42) -> list[dict]:
+    # RACE 4-choice reading comprehension — benign control to check general QA
+    # isn't degraded by faithfulness steering
+    ds = load_dataset("ehovy/race", "all", split="test", cache_dir=cache_dir)
     ds = ds.shuffle(seed=seed)
     if n is not None:
         ds = ds.select(range(n))
-    return [
-        {
-            "context":  row["context"],
+    labels = ["A", "B", "C", "D"]
+    records = []
+    for row in ds:
+        options = {labels[i]: row["options"][i] for i in range(4)}
+        records.append({
+            "context":  row["article"],
             "question": row["question"],
-            "options":  None,
-            "gold":     row["answers"],  # list[str]
-        }
-        for row in ds
-    ]
-
-
-def load_squad_control(n: Optional[int] = None, cache_dir: str = CACHE_DIR, seed: int = 42) -> list[dict]:
-    # SQuAD v1 as a benign control — model should answer correctly from context,
-    # used to check that faithfulness steering doesn't degrade normal QA performance
-    ds = load_dataset("rajpurkar/squad", split="validation", cache_dir=cache_dir)
-    ds = ds.shuffle(seed=seed)
-    if n is not None:
-        ds = ds.select(range(n))
-    return [
-        {
-            "context":  row["context"],
-            "question": row["question"],
-            "options":  None,
-            "gold":     row["answers"]["text"][0],  # first acceptable answer
-        }
-        for row in ds
-    ]
-
-
-load_mctest = load_squad_control  # alias used in run_stage2.py
+            "options":  options,
+            "gold":     row["answer"].strip().upper(),
+        })
+    return records
 
 
 if __name__ == "__main__":
     cf = load_faitheval_counterfactual(n=2)
-    un = load_faitheval_unanswerable(n=2)
-    sq = load_squad_control(n=2)
-    for name, records in [("cf", cf), ("un", un), ("sq", sq)]:
+    mc = load_race(n=2)
+    for name, records in [("cf", cf), ("mc", mc)]:
         print(name, list(records[0].keys()))
         print("  gold:", records[0]["gold"])
         print("  options:", records[0]["options"])

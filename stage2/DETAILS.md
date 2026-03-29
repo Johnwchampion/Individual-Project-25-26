@@ -94,6 +94,22 @@ All generation uses:
 - `max_new_tokens=150` — hard cap on response length
 - `pad_token_id=tokenizer.eos_token_id` — required since DeepSeek uses the same token for both
 
+### Why greedy decoding is appropriate for this experiment
+
+The obvious objection is: most deployed LLMs use sampling (temperature > 0), so results obtained under greedy decoding may not reflect real-world behaviour. This objection conflates two different goals — **deployment simulation** and **causal attribution** — and this experiment is firmly the latter.
+
+**The scientific question is causal, not distributional.** The experiment asks: *does suppressing these experts shift the model's behaviour?* To answer a causal question cleanly, all other sources of variance should be held to zero. Sampling introduces token-level stochasticity that is orthogonal to the intervention; with a single sample per prompt, it is impossible to distinguish "the intervention worked" from "this run happened to draw safe tokens." Greedy decoding eliminates this ambiguity entirely: any difference between baseline and steered conditions is attributable exclusively to the expert suppression.
+
+**Greedy decoding gives the modal output — a well-defined, interpretable quantity.** `safe_rate` under greedy is the fraction of prompts for which the model's *most probable* completion is classified as safe. This is a conservative and meaningful metric: if the highest-probability sequence is harmful, the model is harmful at that prompt regardless of what temperature a downstream application might use. Conversely, if the most probable sequence is safe, safety steering has succeeded at the level that matters most.
+
+**The causal direction is preserved under sampling.** If suppressing expert X causes the mode to shift from unsafe to safe, it almost certainly shifts the full distribution toward safety. The mode is the highest-probability outcome; if its probability increases relative to the unsafe mode, probability mass has moved into the safe region. The causal conclusion — that the identified experts mediate the safety behaviour — generalises to the sampled setting.
+
+**Single-sample sampling is strictly less reliable.** The objection assumes that non-deterministic generation is somehow more rigorous. The opposite is true for a single run: a single sampled output per prompt is a one-draw Monte Carlo estimator of safe_rate with high variance. Greedy decoding is the exact limit of temperature → 0, giving the most stable single-pass estimate of the model's central tendency. The only genuinely more rigorous alternative is many samples per prompt, which is N times more expensive and still requires the intervention to be deterministic to isolate its effect.
+
+**Reproducibility is a prerequisite for scientific claims.** Any result obtained under greedy decoding can be exactly reproduced by any future reviewer with the same model weights and inputs. This falsifiability is impossible to guarantee under sampling without fixing a seed — and if you fix a seed, you have re-introduced determinism anyway, just less transparently.
+
+In short: greedy decoding is not a concession to practicality — it is the correct choice for a causal intervention experiment. It maximises statistical power (zero generation variance), produces interpretable metrics (modal completion), and ensures full reproducibility.
+
 ---
 
 ## Classifier Device
@@ -233,32 +249,62 @@ Currently set to `3` in `stage2/src/config.py`. This controls how many experts p
 
 ---
 
-## Post-Selection vs Pre-Selection Intervention
+## Pre-Selection Intervention: Hard Mode (Current Implementation, SteerMoE-Faithful)
 
-The current `ExpertSteerer` intercepts the gate's **output** — after DeepSeek's grouped top-k selection has already run. This is a post-selection intervention.
+**Hard mode now matches SteerMoE's pre-selection mechanism** (updated 2026-03-28). The previous post-selection output-hook architecture has been replaced.
 
-A closely related paper, SteerMoE (Fayyaz et al., 2025), which independently proposes the same RD-based expert detection method and applies it to faithfulness and safety steering, instead intervenes **pre-selection**:
+### SteerMoE's mechanism (§3.2 of Fayyaz et al., 2025)
 
-1. Take raw router logits `z`
-2. Normalise to log-softmax: `s = log softmax(z)` — puts all layers on a common scale
-3. For each suppressed expert k: `sk ← smin − ε` (below every other expert's score)
-4. Re-normalise via softmax to get probabilities
-5. Run top-k selection normally on the modified distribution
+1. Router produces raw logits `z`
+2. Convert to log-softmax scores: `s = log_softmax(z)`
+3. Before top-k runs: suppressed experts get `s_k ← s_min − ε` (dragged to bottom of distribution)
+4. Top-k selection runs on modified scores — suppressed experts rank last, natural next-in-line fills the slot
+5. Renormalise selected experts via softmax
 
-Because suppressed experts are pushed below all others before selection, the router naturally selects k non-suppressed alternatives. The model always gets exactly k=6 experts with natural, in-distribution weights.
+The critical property: suppressed experts are uncompetitive **before** DeepSeek's native grouped top-k runs, so group constraints are fully respected and the replacement expert is whatever would have been next in line within each group.
 
-**Why post-selection (our approach) is weaker:**
+### Our implementation
 
-- `topk_idx` still contains 6 entries, but some may have zero (hard) or near-zero (soft) weight after the hook fires. Effectively fewer than 6 experts contribute to the output.
-- The remaining experts are renormalised to sum to 1 — their weights are inflated beyond what they were trained with.
-- Suppressed experts that were selected still have their FFN called (they receive the token) but contribute nothing — compute is wasted and the weight distribution seen by the residual stream is out-of-distribution.
-- The paper's approach always produces exactly k experts with naturally distributed weights, preserving the MoE structure the model was trained under.
+Because DeepSeek-V2-Lite's gate is a single module (we cannot hook between its internal log-softmax and grouped top-k steps), we implement pre-selection via a **forward pre-hook that modifies the hidden state** using the pseudoinverse projection:
 
-Note: SteerMoE omits DeepSeek-V2-Lite from their experiments due to licence restrictions, so their pre-selection approach has not been validated on this specific architecture's grouped top-k gate.
+We want `F.linear(h + δh, W)[ei] = TARGET` (TARGET = −1e4) for each suppressed expert `ei`. The minimum-norm solution is:
 
-**The Short Version:**
+```
+δh = δ_logit @ (WW^T)^{-1} @ W
+where δ_logit[ei] = TARGET − current_logit[ei]  (input-dependent, computed per token)
+     δ_logit[j]  = 0 for all non-suppressed j
+```
 
-The paper's approach is safe from gibberish because it steers the input to the router, not the output of the router. The router still does its job normally — it just does it on a modified menu. The model never has to process a layer output that violates the structural assumptions baked into its weights. The repo's approach steers the output, which means the model is forced to process something it was never trained to handle, and coherence degrades in proportion to how aggressively you do it.
+Because `(WW^T)^{-1} @ W @ W^T = I`, this shift is exact: the suppressed experts' logits land at exactly TARGET = −1e4, all other experts' logits are unchanged. The gate then runs its complete native routing (grouped top-k, aux loss, load balancing) on the modified input — the model never sees a structurally invalid output.
+
+**Precomputed per gate** (shape notations: E = n_experts, D = d_model, S = n_suppressed):
+- `P_rows = ((WW^T)^{-1} @ W)[suppressed]`  — shape [S, D]
+- `W_rows = W[suppressed]`                    — shape [S, D]
+
+**Per forward pass** (per token):
+```python
+logits_sup  = h_flat @ W_rows.T          # [n_tok, S] — current logits for suppressed experts
+delta_logit = TARGET - logits_sup         # [n_tok, S] — shift needed to reach TARGET
+delta_h     = delta_logit @ P_rows        # [n_tok, D] — hidden state perturbation
+```
+
+Token-range restriction is applied before this computation: if `token_range=(q_start, q_end)` is set, only the question-span slice of h is modified; context tokens are untouched.
+
+### Key difference from our previous post-selection hard mode
+
+The old implementation (removed 2026-03-28) intercepted gate **outputs** `(topk_idx, topk_weight)` after grouped top-k had already run, then replaced suppressed experts with a **flat** `topk(k)` over all 64 experts (suppressed masked to −inf). This violated DeepSeek's grouped top-k group constraints — the substitute expert could come from any group, not necessarily the one whose slot was vacated. The current pre-selection approach avoids this entirely by letting the gate's own routing handle the replacement.
+
+### Key difference from soft mode
+
+Both hard and soft mode modify `h` via the pseudoinverse framework. The distinction is:
+
+| | Hard mode | Soft mode |
+|---|---|---|
+| δh computation | **Input-dependent** — computed per token to drive logit to exactly TARGET | **Input-independent** — constant δh precomputed from `strength × RD scores` |
+| Effect on suppressed experts | Logit always lands at −1e4 regardless of current value | Logit shifted by fixed amount; expert may still win top-k if it was dominant |
+| Inspiration | SteerMoE §3.2 | Novel (pseudoinverse logit perturbation) |
+
+Note: SteerMoE omits DeepSeek-V2-Lite from their experiments due to licence restrictions, so neither approach has been validated on this specific architecture's grouped top-k gate by the original authors.
 
 ---
 
@@ -408,6 +454,84 @@ theoretical feasible range:  [0.14, 0.35]
 geometric centre:             √(0.14 × 0.35) ≈ 0.22
 empirically validated value:  0.5  (above theoretical ceiling; actual margin is wider)
 ```
+
+---
+
+## Faithfulness Steering: Null Result, Root Causes, and Why the Paper Still Works
+
+### The measurement–intervention mismatch
+
+Stage 1 faithfulness RD is computed using `slice_question_routing`: activations are measured **only over question-span tokens**. This means the candidate experts identified as "faithfulness-sensitive" are those that fire differently on question tokens when a context passage is present vs absent. The steering intervention in Stage 2 then suppresses these experts **across all tokens** — including context tokens, which were never part of the candidate signal.
+
+There is a genuine mismatch between the site of measurement and the site of intervention.
+
+The **counter-argument** (implicitly the paper's position) is that by the time the model processes question tokens, self-attention has already attended over the context. Question-token hidden states therefore encode some context-sensitivity, and the experts that activate on them may indirectly reflect whether the model is grounding in context or relying on parametric memory.
+
+This is partially valid but has a structural weakness: **MoE routing in FFN layers is per-token and independent**. A question token like `"What"` or `"capital"` routes to experts based on its own hidden state at that layer. Whether the preceding context says "Paris" or "Berlin" changes the token representation only weakly — the surface form of the question is identical. What `slice_question_routing` predominantly captures is therefore **which experts activate on question tokens when a reading-comprehension passage is prepended vs when it is absent** — largely a structural/positional signal, not a confabulation-vs-faithfulness signal.
+
+Compare with safety: RD is measured on **response tokens**, which differ completely between conditions (`"Sure, here is..."` vs `"I cannot help..."`). The signal directly identifies experts responsible for producing refusal vs compliance text. The causal chain is tight: suppress expert → response shifts. For faithfulness, the analogous causal chain would require that question-token routing is the proximate cause of whether the answer follows context — a much weaker claim.
+
+### Empirical confirmation of the mismatch
+
+On `faith_cf` (FaithEval-Counterfactual, n=100):
+
+| Condition | Accuracy | Δ |
+|---|---|---|
+| Baseline | 0.750 | — |
+| Hard (CANDIDATE_N=3) | 0.730 | −0.020 |
+| Soft (SOFT_STRENGTH=0.5) | 0.540 | −0.210 |
+| Soft (SOFT_STRENGTH=0.1) | 0.740 | −0.010 |
+
+Hard mode is essentially null (28 candidates across 19 layers, −0.020 within noise). Soft mode at 0.5 is catastrophic — not because the direction is wrong (see below), but because several layers contain context-expert outliers at +5 to +6σ, giving delta_logit up to +3.2 nats and forcing near-exclusive selection of those experts, which destroys routing quality. At 0.1, the perturbation is too small to produce a detectable effect.
+
+The null hard-mode result is the cleanest evidence: suppressing parametric experts identified on question-token SQuAD routing does not causally improve faithfulness on counterfactual questions. The identified experts are not the proximate cause of confabulation behaviour.
+
+### Why SOFT_STRENGTH=0.5 is catastrophic for faithfulness but fine for safety
+
+`load_rd_scores` passes all 64 expert scores (not just candidates) to the soft mode hook. After per-layer std normalisation, some layers (7, 8, 12) contain context-grounded outlier experts at +5 to +6 normalised RD. With `strength=0.5`, these receive `delta_logit = +2.5 to +3.2` nats, boosting their selection probability by e^3 ≈ 20×. This forces near-exclusive selection of these outlier experts at those layers on every token, producing out-of-distribution representations.
+
+For safety, the same strength=0.5 works because the safety RD distribution is more uniform — no single expert dominates at 6σ — so the maximum delta_logit stays within the coherence regime.
+
+### Why the paper gets meaningful faithfulness gains with the same token-span methodology
+
+SteerMoE uses the same question-token RD approach and steers at all tokens. The only structural difference is **pre-selection vs post-selection** hooks. This difference turns out to matter specifically for the faithfulness axis:
+
+**Our post-selection hook only fires when a suppressed expert actually appears in the model's top-6 for a given token.** On context tokens — the tokens where the model processes the information it should be faithful to — the parametric experts (identified from question-token RD on SQuAD) may not be in the top-6 at all, because context tokens recruit different experts. Our hook is silent during that phase.
+
+**Pre-selection (SteerMoE) applies a consistent logit bias at every token in every candidate layer**, regardless of whether the suppressed experts would have been selected. On context tokens, even if the parametric experts are not in the top-6, pre-selection still slightly redistributes probability mass away from them, creating a persistent, cumulative tilt toward the non-parametric manifold throughout the full forward pass — including during context processing.
+
+For safety, this distinction is irrelevant: the harmful compliance experts are reliably in the top-6 during response generation (the site where both approaches fire), so both hooks apply equally strong interventions. For faithfulness, the distinction may be meaningful because the critical processing happens partly during context tokens, where our hook is inactive and pre-selection is not.
+
+Additional factors that may contribute to the paper's gains:
+- **Different models**: SteerMoE excludes DeepSeek-V2-Lite and uses Mixtral (k=2/8 experts) and OLMoE (k=8/64). With k=2, suppressing 1 expert removes 50% of the selected set — a far more aggressive relative intervention than our k=6 where 1 removal is 17%.
+- **Easier faithfulness subtasks**: The paper likely shows gains on the "consistent" FaithEval subtask (context and knowledge agree — model just needs to use context), not specifically the counterfactual subtask (context contradicts training knowledge — model must override). Question-token RD is more directly informative for "does context change routing" than for "does the model override training knowledge."
+- **Stronger question-token signal**: For their models, attention may more strongly encode context content into question-token representations, making the RD signal more causally connected to faithfulness.
+
+### Question-token-only steering (implemented)
+
+A further methodological observation: Stage 2 always provides context in the prompt. This means the experts identified as "more active without context" are — in Stage 2 — already somewhat naturally depressed by the presence of context. Suppressing them further across all tokens risks damaging experts that serve a useful function even in the with-context condition, without targeting the confabulation mechanism specifically.
+
+A tighter intervention is to apply the hook **only at question-span token positions**, matching the token span used during Stage 1 RD measurement. This leaves context-token processing completely unaffected (the model reads the passage normally), and restricts the perturbation to the positions where the signal was measured.
+
+This is implemented via the `token_range=(start, end)` parameter added to `ExpertSteerer`:
+
+- **Soft mode**: `delta_h` is added only to `h[:, start:end, :]` rather than broadcast across all positions.
+- **Hard mode**: the post-hook only replaces experts for tokens whose index falls within `[start:end]`.
+
+In `run_faith_batch`, the steerer is now constructed per-record (rather than shared across the batch) using `_get_question_token_range`, which tokenizes the question text and locates it within the full chat-templated input via subsequence search. If the question span cannot be found, `token_range=None` and the hook falls back to all-token behaviour.
+
+Whether this produces faithfulness improvements is an open empirical question — the fundamental issue that question-token RD may not identify confabulation-responsible experts remains. But it is at minimum the internally consistent application of the existing RD signal.
+
+### The correct fix for faithfulness
+
+The fix that would align the measurement site with the intervention site:
+
+- **Dataset**: FaithEval-Counterfactual (or similar counterfactual QA)
+- **Condition A**: Full context + forced context-following answer (teacher-forced)
+- **Condition B**: No context + forced parametric answer (teacher-forced)
+- **Token span**: Response tokens (analogous to safety pipeline — assistant turn only)
+
+This gives `RD = p(context-following response) − p(parametric response)` directly identifying experts involved in the belief-override mechanism, not just experts that activate differently when a reading passage is prepended. This is left as future work.
 
 ---
 

@@ -99,7 +99,7 @@ Two candidate sets are selected for safety, one for faithfulness:
 
 `ExpertSteerer` (`stage2/src/intervene.py`) registers forward hooks on each targeted MoE gate module. Two modes are supported:
 
-- **Hard deactivation**: a two-hook architecture. A pre-hook caches `log_softmax` of the gate's raw router logits. A post-hook intercepts `(topk_idx, topk_weight, aux_loss)` and replaces any suppressed expert that was selected with the highest-scoring non-suppressed alternative from the cached scores. Weights are recomputed via softmax over the replacement set. Exactly k=6 experts always contribute with natural, in-distribution weights — only the identity of selected experts changes.
+- **Hard deactivation**: pre-selection via pseudoinverse perturbation (SteerMoE-faithful). A forward pre-hook computes per-token `δh = δ_logit @ (WWᵀ)⁻¹ @ W`, where `δ_logit[i] = TARGET − current_logit[i]` for suppressed experts and 0 otherwise. Adding `δh` drives suppressed experts' logits to exactly `TARGET = −1e4` before the gate's native grouped top-k runs. All other experts' logits are unchanged exactly. The gate handles all routing natively — grouped top-k, aux loss, load balancing — always producing k=6 experts with natural, in-distribution weights.
 - **Soft suppression**: pre-selection via pseudoinverse perturbation. A hidden-state delta `δh` is precomputed as the minimum-norm solution to `F.linear(h + δh, W) = F.linear(h, W) + δ_logit`, where `δ_logit[i] = SOFT_STRENGTH × RD_score[i]`. A pre-hook adds `δh` to the gate's input hidden state before any routing occurs. The gate's grouped top-k then executes normally on the shifted logits — always k=6 with natural weights. `SOFT_STRENGTH` defaults to 0.5, empirically validated as the minimum value producing a detectable steering effect while preserving full output fluency.
 
 Hooks are registered once per generation and removed via `.remove()` when done.
@@ -122,12 +122,11 @@ Two directions:
 | Benchmark | HuggingFace ID | Purpose |
 |---|---|---|
 | FaithEval-Counterfactual | `Salesforce/FaithEval-counterfactual-v1.0` | MCQ where context contradicts parametric knowledge |
-| FaithEval-Unanswerable | `Salesforce/FaithEval-unanswerable-v1.0` | Model should abstain; context doesn't answer the question |
-| SQuAD control | `rajpurkar/squad` | Benign QA; checks steering doesn't break normal performance |
+| RACE | `ehovy/race` | Benign reading comprehension control; checks steering doesn't degrade general QA |
 
 The `faith_neg` candidate set (context-ignoring experts) is suppressed in both hard and soft modes.
 
-Results are saved to `/scratch/sc23jc3/stage2_results/results.json`.
+Results are saved to `stage2/results/{task}/{condition}.json` (e.g. `stage2/results/safety_safe/baseline.json`).
 
 Orchestrated by `stage2/src/run_stage2.py`.
 
@@ -164,15 +163,14 @@ stage1/
 
 stage2/
   prep/
-    load_faith.py             Loaders for FaithEval-Counterfactual, FaithEval-Unanswerable, SQuAD control
+    load_faith.py             Loaders for FaithEval-Counterfactual and RACE
     load_safety.py            Loader for AdvBench; FORCED_PREFIX and SAFETY_SYSTEM_PROMPT constants
     prep_classifier.py        One-time script to pre-download Llama-Guard-3-8B to HPC cache
   src/
     config.py                 Stage 2 settings (CANDIDATE_N, SOFT_STRENGTH, MAX_NEW_TOKENS, RESULTS_DIR)
     candidates.py             Expert candidate selection via intersection of top-N on both RD metrics
-    intervene.py              ExpertSteerer — two-hook hard mode and pseudoinverse soft mode
+    intervene.py              ExpertSteerer — pre-hook hard mode (pseudoinverse pre-selection) and soft mode
     classify.py               LlamaGuardClassifier — wraps Llama-Guard-3-8B for safe/unsafe judgement
-    evaluate.py               Metric functions: safe_rate, faithfulness exact-match variants
     run_stage2.py             Main Stage 2 orchestration (all conditions, all benchmarks)
   analysis/
     01_safety_results.ipynb   Safety steering results: safe_rate across conditions and directions

@@ -1779,5 +1779,546 @@
         }
       }
     }
+  },
+  "faithfulness_token_range": {
+    "description": "Token-range-restricted steering: hooks fire only on question-span tokens [q_start:q_end], matching the Stage 1 RD measurement site. hard_q_ok=True means the targeted expert was fully suppressed on question tokens. hard_c_ok=True means context tokens were unaffected.",
+    "candidates": {
+      "1": [
+        6,
+        8
+      ],
+      "3": [
+        60
+      ],
+      "5": [
+        7,
+        34
+      ],
+      "6": [
+        38
+      ],
+      "7": [
+        62
+      ],
+      "8": [
+        16
+      ],
+      "10": [
+        19
+      ],
+      "12": [
+        13,
+        16
+      ],
+      "13": [
+        18
+      ],
+      "14": [
+        17,
+        63
+      ],
+      "15": [
+        34
+      ],
+      "16": [
+        27,
+        29
+      ],
+      "17": [
+        25
+      ],
+      "18": [
+        4,
+        23,
+        27
+      ],
+      "21": [
+        30,
+        61
+      ],
+      "22": [
+        34,
+        62
+      ],
+      "23": [
+        60
+      ],
+      "24": [
+        27
+      ],
+      "26": [
+        50
+      ]
+    },
+    "layers": {
+      "1": {
+        "experts": {
+          "6": {
+            "baseline_q_rate": 0.0151,
+            "baseline_c_rate": 0.0105,
+            "hard_q_rate": 0.0,
+            "hard_c_rate": 0.0105,
+            "soft_q_rate": 0.0,
+            "soft_c_rate": 0.0105,
+            "hard_q_ok": true,
+            "hard_c_ok": true,
+            "soft_q_reduced": true,
+            "soft_c_ok": true,
+            "expected_logit_shift": -1.5292,
+            "actual_logit_shift": -1.5291
+          },
+          "8": {
+            "baseline_q_rate": 0.0343,
+            "baseline_c_rate": 0.0154,
+            "hard_q_rate": 0.0,
+            "hard_c_rate": 0.0154,
+            "soft_q_rate": 0.0,
+            "soft_c_rate": 0.0154,
+            "hard_q_ok": true,
+            "hard_c_ok": true,
+            "soft_q_reduced": true,
+            "soft_c_ok": true,
+            "expected_logit_shift": -1.5036,
+            "actual_logit_shift": -1.5036
+          }
+        }
+      },
+      "3": {
+        "experts": {
+          "60": {
+            "baseline_q_rate": 0.0149,
+            "baseline_c_rate": 0.009,
+            "hard_q_rate": 0.0,
+            "hard_c_rate": 0.009,
+            "soft_q_rate": 0.0,
+            "soft_c_rate": 0.009,
+            "hard_q_ok": true,
+            "hard_c_ok": true,
+            "soft_q_reduced": true,
+            "soft_c_ok": true,
+            "expected_logit_shift": -1.3281,
+            "actual_logit_shift": -1.3092
+          }
+        }
+      },
+      "5": {
+        "experts": {
+          "7": {
+            "baseline_q_rate": 0.0158,
+            "baseline_c_rate": 0.026,
+            "hard_q_rate": 0.0,
+            "hard_c_rate": 0.026,
+            "soft_q_rate": 0.0048,
+            "soft_c_rate": 0.026,
+            "hard_q_ok": true,
+            "hard_c_ok": true,
+            "soft_q_reduced": true,
+            "soft_c_ok": true,
+            "expected_logit_shift": -1.0865,
+            "actual_logit_shift": -1.0404
+          },
+          "34": {
+            "baseline_q_rate": 0.0309,
+            "baseline_c_rate": 0.0235,
+            "hard_q_rate": 0.0,
+            "hard_c_rate": 0.0235,
+            "soft_q_rate": 0.006,
+            "soft_c_rate": 0.0234,
+            "hard_q_ok": true,
+            "hard_c_ok": true,
+            "soft_q_reduced": true,
+            "soft_c_ok": true,
+            "expected_logit_shift": -1.2345,
+            "actual_logit_shift": -1.2286
+          }
+        }
+      },
+      "6": {
+        "experts": {
+          "38": {
+            "baseline_q_rate": 0.031,
+            "baseline_c_rate": 0.0288,
+            "hard_q_rate": 0.0,
+            "hard_c_rate": 0.0288,
+            "soft_q_rate": 0.0054,
+            "soft_c_rate": 0.0288,
+            "hard_q_ok": true,
+            "hard_c_ok": true,
+            "soft_q_reduced": true,
+            "soft_c_ok": true,
+            "expected_logit_shift": -1.2021,
+            "actual_logit_shift": -1.1741
+          }
+        }
+      },
+      "7": {
+        "experts": {
+          "62": {
+            "baseline_q_rate": 0.0117,
+            "baseline_c_rate": 0.0163,
+            "hard_q_rate": 0.0,
+            "hard_c_rate": 0.0163,
+            "soft_q_rate": 0.0007,
+            "soft_c_rate": 0.0163,
+            "hard_q_ok": true,
+            "hard_c_ok": true,
+            "soft_q_reduced": true,
+            "soft_c_ok": true,
+            "expected_logit_shift": -0.8955,
+            "actual_logit_shift": -0.9501
+          }
+        }
+      },
+      "8": {
+        "experts": {
+          "16": {
+            "baseline_q_rate": 0.0278,
+            "baseline_c_rate": 0.0244,
+            "hard_q_rate": 0.0,
+            "hard_c_rate": 0.0244,
+            "soft_q_rate": 0.0031,
+            "soft_c_rate": 0.0244,
+            "hard_q_ok": true,
+            "hard_c_ok": true,
+            "soft_q_reduced": true,
+            "soft_c_ok": true,
+            "expected_logit_shift": -0.8469,
+            "actual_logit_shift": -0.9529
+          }
+        }
+      },
+      "10": {
+        "experts": {
+          "19": {
+            "baseline_q_rate": 0.0044,
+            "baseline_c_rate": 0.0056,
+            "hard_q_rate": 0.0,
+            "hard_c_rate": 0.0056,
+            "soft_q_rate": 0.0,
+            "soft_c_rate": 0.0056,
+            "hard_q_ok": true,
+            "hard_c_ok": true,
+            "soft_q_reduced": true,
+            "soft_c_ok": true,
+            "expected_logit_shift": -2.0697,
+            "actual_logit_shift": -1.9834
+          }
+        }
+      },
+      "12": {
+        "experts": {
+          "13": {
+            "baseline_q_rate": 0.033,
+            "baseline_c_rate": 0.0276,
+            "hard_q_rate": 0.0,
+            "hard_c_rate": 0.0276,
+            "soft_q_rate": 0.0005,
+            "soft_c_rate": 0.0276,
+            "hard_q_ok": true,
+            "hard_c_ok": true,
+            "soft_q_reduced": true,
+            "soft_c_ok": true,
+            "expected_logit_shift": -0.9097,
+            "actual_logit_shift": -0.8622
+          },
+          "16": {
+            "baseline_q_rate": 0.0064,
+            "baseline_c_rate": 0.0091,
+            "hard_q_rate": 0.0,
+            "hard_c_rate": 0.0091,
+            "soft_q_rate": 0.0003,
+            "soft_c_rate": 0.0092,
+            "hard_q_ok": true,
+            "hard_c_ok": true,
+            "soft_q_reduced": true,
+            "soft_c_ok": true,
+            "expected_logit_shift": -0.8706,
+            "actual_logit_shift": -0.6985
+          }
+        }
+      },
+      "13": {
+        "experts": {
+          "18": {
+            "baseline_q_rate": 0.0105,
+            "baseline_c_rate": 0.0189,
+            "hard_q_rate": 0.0,
+            "hard_c_rate": 0.0189,
+            "soft_q_rate": 0.0,
+            "soft_c_rate": 0.0188,
+            "hard_q_ok": true,
+            "hard_c_ok": true,
+            "soft_q_reduced": true,
+            "soft_c_ok": true,
+            "expected_logit_shift": -1.2053,
+            "actual_logit_shift": -1.2788
+          }
+        }
+      },
+      "14": {
+        "experts": {
+          "17": {
+            "baseline_q_rate": 0.0086,
+            "baseline_c_rate": 0.0102,
+            "hard_q_rate": 0.0,
+            "hard_c_rate": 0.0102,
+            "soft_q_rate": 0.0,
+            "soft_c_rate": 0.0102,
+            "hard_q_ok": true,
+            "hard_c_ok": true,
+            "soft_q_reduced": true,
+            "soft_c_ok": true,
+            "expected_logit_shift": -1.236,
+            "actual_logit_shift": -1.2382
+          },
+          "63": {
+            "baseline_q_rate": 0.0078,
+            "baseline_c_rate": 0.0058,
+            "hard_q_rate": 0.0,
+            "hard_c_rate": 0.0058,
+            "soft_q_rate": 0.0,
+            "soft_c_rate": 0.0058,
+            "hard_q_ok": true,
+            "hard_c_ok": true,
+            "soft_q_reduced": true,
+            "soft_c_ok": true,
+            "expected_logit_shift": -1.51,
+            "actual_logit_shift": -1.2892
+          }
+        }
+      },
+      "15": {
+        "experts": {
+          "34": {
+            "baseline_q_rate": 0.0066,
+            "baseline_c_rate": 0.0211,
+            "hard_q_rate": 0.0,
+            "hard_c_rate": 0.0211,
+            "soft_q_rate": 0.0007,
+            "soft_c_rate": 0.021,
+            "hard_q_ok": true,
+            "hard_c_ok": true,
+            "soft_q_reduced": true,
+            "soft_c_ok": true,
+            "expected_logit_shift": -0.7051,
+            "actual_logit_shift": -0.5641
+          }
+        }
+      },
+      "16": {
+        "experts": {
+          "27": {
+            "baseline_q_rate": 0.043,
+            "baseline_c_rate": 0.0577,
+            "hard_q_rate": 0.0,
+            "hard_c_rate": 0.0577,
+            "soft_q_rate": 0.0003,
+            "soft_c_rate": 0.0575,
+            "hard_q_ok": true,
+            "hard_c_ok": true,
+            "soft_q_reduced": true,
+            "soft_c_ok": true,
+            "expected_logit_shift": -1.3289,
+            "actual_logit_shift": -1.3248
+          },
+          "29": {
+            "baseline_q_rate": 0.0136,
+            "baseline_c_rate": 0.0125,
+            "hard_q_rate": 0.0,
+            "hard_c_rate": 0.0125,
+            "soft_q_rate": 0.0,
+            "soft_c_rate": 0.0124,
+            "hard_q_ok": true,
+            "hard_c_ok": true,
+            "soft_q_reduced": true,
+            "soft_c_ok": true,
+            "expected_logit_shift": -1.3331,
+            "actual_logit_shift": -1.2545
+          }
+        }
+      },
+      "17": {
+        "experts": {
+          "25": {
+            "baseline_q_rate": 0.027,
+            "baseline_c_rate": 0.0169,
+            "hard_q_rate": 0.0,
+            "hard_c_rate": 0.0169,
+            "soft_q_rate": 0.0023,
+            "soft_c_rate": 0.0168,
+            "hard_q_ok": true,
+            "hard_c_ok": true,
+            "soft_q_reduced": true,
+            "soft_c_ok": true,
+            "expected_logit_shift": -0.9115,
+            "actual_logit_shift": -0.9708
+          }
+        }
+      },
+      "18": {
+        "experts": {
+          "4": {
+            "baseline_q_rate": 0.0542,
+            "baseline_c_rate": 0.0606,
+            "hard_q_rate": 0.0,
+            "hard_c_rate": 0.0606,
+            "soft_q_rate": 0.0017,
+            "soft_c_rate": 0.0605,
+            "hard_q_ok": true,
+            "hard_c_ok": true,
+            "soft_q_reduced": true,
+            "soft_c_ok": true,
+            "expected_logit_shift": -1.2748,
+            "actual_logit_shift": -1.3785
+          },
+          "23": {
+            "baseline_q_rate": 0.0105,
+            "baseline_c_rate": 0.009,
+            "hard_q_rate": 0.0,
+            "hard_c_rate": 0.009,
+            "soft_q_rate": 0.0003,
+            "soft_c_rate": 0.009,
+            "hard_q_ok": true,
+            "hard_c_ok": true,
+            "soft_q_reduced": true,
+            "soft_c_ok": true,
+            "expected_logit_shift": -1.0898,
+            "actual_logit_shift": -0.8466
+          },
+          "27": {
+            "baseline_q_rate": 0.0311,
+            "baseline_c_rate": 0.0302,
+            "hard_q_rate": 0.0,
+            "hard_c_rate": 0.0303,
+            "soft_q_rate": 0.0001,
+            "soft_c_rate": 0.0302,
+            "hard_q_ok": true,
+            "hard_c_ok": true,
+            "soft_q_reduced": true,
+            "soft_c_ok": true,
+            "expected_logit_shift": -1.6376,
+            "actual_logit_shift": -1.5387
+          }
+        }
+      },
+      "21": {
+        "experts": {
+          "30": {
+            "baseline_q_rate": 0.0057,
+            "baseline_c_rate": 0.0064,
+            "hard_q_rate": 0.0,
+            "hard_c_rate": 0.0064,
+            "soft_q_rate": 0.0,
+            "soft_c_rate": 0.0065,
+            "hard_q_ok": true,
+            "hard_c_ok": true,
+            "soft_q_reduced": true,
+            "soft_c_ok": true,
+            "expected_logit_shift": -1.1679,
+            "actual_logit_shift": -0.8941
+          },
+          "61": {
+            "baseline_q_rate": 0.019,
+            "baseline_c_rate": 0.0159,
+            "hard_q_rate": 0.0,
+            "hard_c_rate": 0.0159,
+            "soft_q_rate": 0.0005,
+            "soft_c_rate": 0.0159,
+            "hard_q_ok": true,
+            "hard_c_ok": true,
+            "soft_q_reduced": true,
+            "soft_c_ok": true,
+            "expected_logit_shift": -1.1898,
+            "actual_logit_shift": -0.9721
+          }
+        }
+      },
+      "22": {
+        "experts": {
+          "34": {
+            "baseline_q_rate": 0.0137,
+            "baseline_c_rate": 0.014,
+            "hard_q_rate": 0.0,
+            "hard_c_rate": 0.014,
+            "soft_q_rate": 0.0003,
+            "soft_c_rate": 0.014,
+            "hard_q_ok": true,
+            "hard_c_ok": true,
+            "soft_q_reduced": true,
+            "soft_c_ok": true,
+            "expected_logit_shift": -1.12,
+            "actual_logit_shift": -0.8058
+          },
+          "62": {
+            "baseline_q_rate": 0.0404,
+            "baseline_c_rate": 0.0506,
+            "hard_q_rate": 0.0,
+            "hard_c_rate": 0.0506,
+            "soft_q_rate": 0.0005,
+            "soft_c_rate": 0.0505,
+            "hard_q_ok": true,
+            "hard_c_ok": true,
+            "soft_q_reduced": true,
+            "soft_c_ok": true,
+            "expected_logit_shift": -1.3316,
+            "actual_logit_shift": -1.2681
+          }
+        }
+      },
+      "23": {
+        "experts": {
+          "60": {
+            "baseline_q_rate": 0.0148,
+            "baseline_c_rate": 0.0181,
+            "hard_q_rate": 0.0,
+            "hard_c_rate": 0.0182,
+            "soft_q_rate": 0.0001,
+            "soft_c_rate": 0.0181,
+            "hard_q_ok": true,
+            "hard_c_ok": true,
+            "soft_q_reduced": true,
+            "soft_c_ok": true,
+            "expected_logit_shift": -1.2302,
+            "actual_logit_shift": -1.105
+          }
+        }
+      },
+      "24": {
+        "experts": {
+          "27": {
+            "baseline_q_rate": 0.0975,
+            "baseline_c_rate": 0.0927,
+            "hard_q_rate": 0.0,
+            "hard_c_rate": 0.0927,
+            "soft_q_rate": 0.0003,
+            "soft_c_rate": 0.0927,
+            "hard_q_ok": true,
+            "hard_c_ok": true,
+            "soft_q_reduced": true,
+            "soft_c_ok": true,
+            "expected_logit_shift": -1.4984,
+            "actual_logit_shift": -1.4397
+          }
+        }
+      },
+      "26": {
+        "experts": {
+          "50": {
+            "baseline_q_rate": 0.0391,
+            "baseline_c_rate": 0.0372,
+            "hard_q_rate": 0.0,
+            "hard_c_rate": 0.0372,
+            "soft_q_rate": 0.0007,
+            "soft_c_rate": 0.0372,
+            "hard_q_ok": true,
+            "hard_c_ok": true,
+            "soft_q_reduced": true,
+            "soft_c_ok": true,
+            "expected_logit_shift": -1.9406,
+            "actual_logit_shift": -1.6985
+          }
+        }
+      }
+    }
   }
 }

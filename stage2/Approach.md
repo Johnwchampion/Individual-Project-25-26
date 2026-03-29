@@ -45,7 +45,7 @@ MoE models use a router to compute a score for each expert and select the top-k.
 
 ## Hard Expert Deactivation
 
-Hard mode uses a two-hook architecture on each targeted gate. A pre-hook caches `log_softmax` of the gate's raw router logits. A post-hook intercepts the gate's output `(topk_idx, topk_weight, aux_loss)` and replaces any suppressed expert that was selected with the highest-scoring non-suppressed alternative from the cached scores. Weights for modified tokens are recomputed via softmax over the replacement set. Exactly k=6 experts always contribute; only the identity of selected experts changes for tokens where a suppressed expert would have appeared.
+Hard mode uses a single forward pre-hook on each targeted gate. Per token, `δh = δ_logit @ (WWᵀ)⁻¹ @ W` is computed, where `δ_logit[i] = TARGET − current_logit[i]` for suppressed experts and 0 otherwise (`TARGET = −1e4`). Adding `δh` to the gate's hidden state input drives suppressed experts' logits to exactly TARGET before the gate's native grouped top-k selection runs. All other experts' logits are unchanged exactly, so the gate handles routing natively — grouped top-k, aux loss, load balancing — always producing k=6 experts with natural, in-distribution weights.
 
 This tests a **causal necessity hypothesis**: if these experts are necessary for a behaviour, replacing them with alternatives should significantly alter that behaviour.
 
@@ -93,8 +93,7 @@ Faithfulness is evaluated via **exact-match or string-match against gold answers
 | Benchmark | Purpose |
 |---|---|
 | FaithEval-Counterfactual | Model ignores context in favour of parametric knowledge |
-| FaithEval-Unanswerable | Model invents answers rather than deferring to context |
-| MCTest | Control condition (benign reading comprehension) |
+| RACE | Benign reading comprehension control; checks steering doesn't degrade general QA |
 
 ---
 

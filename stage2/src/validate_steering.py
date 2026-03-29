@@ -231,6 +231,330 @@ def validate_axis(model, ids_list, hard_candidates, soft_rd_scores, strength, la
     return layers_result
 
 
+# Token-range validation (faithfulness question-span steering)
+
+def _find_subsequence(seq, subseq):
+    for i in range(len(seq) - len(subseq) + 1):
+        if seq[i:i + len(subseq)] == subseq:
+            return i
+    return None
+
+
+def _faith_ids_with_spans(model, tokenizer, records):
+    """
+    Returns list of (input_ids, q_start, q_end) for each faith record.
+    q_start/q_end are the token indices of the question text within the
+    full chat-templated input — the same span used during Stage 1 RD measurement.
+    Records where the question span cannot be located are skipped.
+    """
+    result = []
+    for rec in records:
+        header = f"Context:\n{rec['context']}\n\nQuestion: {rec['question']}"
+        if rec["options"]:
+            opts = "\n".join(f"{k}. {v}" for k, v in rec["options"].items())
+            prompt = f"{header}\n\nOptions:\n{opts}\n\nAnswer with a single letter (A, B, C, or D)."
+        else:
+            prompt = (
+                f"{header}\n\nAnswer based only on the context. "
+                "If the context does not contain enough information to answer, say so."
+            )
+        ids = tokenizer.apply_chat_template(
+            [{"role": "user", "content": prompt}],
+            add_generation_prompt=True,
+            return_tensors="pt",
+        ).to(model.device)
+        full_ids = ids[0].tolist()
+        q_ids = tokenizer(" " + rec["question"], add_special_tokens=False)["input_ids"]
+        start = _find_subsequence(full_ids, q_ids)
+        if start is None:
+            continue
+        result.append((ids, start, start + len(q_ids)))
+    return result
+
+
+def collect_routing_stats_split(model, ids_with_spans):
+    """
+    Like collect_routing_stats but separately accumulates routing stats for
+    question-span tokens [q_start:q_end] and all other (context) tokens.
+
+    ids_with_spans: list of (input_ids, q_start, q_end)
+
+    Returns:
+        {layer_idx: {
+            "q_experts": [int, ...],   # expert slots for question-span tokens
+            "c_experts": [int, ...],   # expert slots for context tokens
+            "q_logits":  [float, ...], # mean gate logit per expert (question-span)
+            "c_logits":  [float, ...], # mean gate logit per expert (context)
+            "n_q_tokens": int,
+            "n_c_tokens": int,
+        }}
+    """
+    layer_data = {}
+    for layer_idx, layer in enumerate(model.model.layers):
+        if not hasattr(layer, "mlp") or not hasattr(layer.mlp, "gate"):
+            continue
+        layer_data[layer_idx] = {
+            "q_experts": [], "c_experts": [],
+            "logit_sum_q": None, "logit_sum_c": None,
+            "n_q_tokens": 0, "n_c_tokens": 0,
+        }
+
+    current_span = [None]
+    obs_hooks = []
+
+    for layer_idx, layer in enumerate(model.model.layers):
+        if not hasattr(layer, "mlp") or not hasattr(layer.mlp, "gate"):
+            continue
+
+        def _make_hook(lidx):
+            def _hook(module, inputs, outputs):
+                h    = inputs[0].detach().float()   # [1, seq_len, d_model]
+                topk = outputs[0].detach().cpu()    # [seq_len, k] or [1, seq_len, k]
+                seq_len = h.shape[1]
+                with torch.no_grad():
+                    logits = F.linear(
+                        h.reshape(-1, h.shape[-1]), module.weight.float()
+                    )  # [seq_len, n_experts]
+
+                topk_by_token = topk.reshape(seq_len, -1)  # [seq_len, k]
+                q_start, q_end = current_span[0]
+                q_end = min(q_end, seq_len)
+
+                # Question-span
+                if q_start < q_end:
+                    q_topk = topk_by_token[q_start:q_end]
+                    layer_data[lidx]["q_experts"].extend(q_topk.reshape(-1).tolist())
+                    layer_data[lidx]["n_q_tokens"] += q_end - q_start
+                    q_mean = logits[q_start:q_end].mean(dim=0).cpu()
+                    if layer_data[lidx]["logit_sum_q"] is None:
+                        layer_data[lidx]["logit_sum_q"] = q_mean.clone()
+                    else:
+                        layer_data[lidx]["logit_sum_q"] += q_mean
+
+                # Context (everything outside question span)
+                c_idx = list(range(0, q_start)) + list(range(q_end, seq_len))
+                if c_idx:
+                    c_topk = topk_by_token[c_idx]
+                    layer_data[lidx]["c_experts"].extend(c_topk.reshape(-1).tolist())
+                    layer_data[lidx]["n_c_tokens"] += len(c_idx)
+                    c_mean = logits[c_idx].mean(dim=0).cpu()
+                    if layer_data[lidx]["logit_sum_c"] is None:
+                        layer_data[lidx]["logit_sum_c"] = c_mean.clone()
+                    else:
+                        layer_data[lidx]["logit_sum_c"] += c_mean
+
+            return _hook
+
+        obs_hooks.append(layer.mlp.gate.register_forward_hook(_make_hook(layer_idx)))
+
+    for ids, q_start, q_end in ids_with_spans:
+        current_span[0] = (q_start, q_end)
+        with torch.no_grad():
+            model(ids, use_cache=False)
+
+    for h in obs_hooks:
+        h.remove()
+
+    n = len(ids_with_spans)
+    result = {}
+    for lidx, d in layer_data.items():
+        result[lidx] = {
+            "q_experts":  d["q_experts"],
+            "c_experts":  d["c_experts"],
+            "q_logits":   (d["logit_sum_q"] / n).tolist() if d["logit_sum_q"] is not None else [],
+            "c_logits":   (d["logit_sum_c"] / n).tolist() if d["logit_sum_c"] is not None else [],
+            "n_q_tokens": d["n_q_tokens"],
+            "n_c_tokens": d["n_c_tokens"],
+        }
+    return result
+
+
+def _split_rate(stats, layer_idx, expert_idx, span):
+    """Rate for question-span ('q') or context ('c') tokens."""
+    flat = stats[layer_idx][f"{span}_experts"]
+    return flat.count(expert_idx) / len(flat) if flat else 0.0
+
+
+def _split_logit(stats, layer_idx, expert_idx, span):
+    logits = stats[layer_idx][f"{span}_logits"]
+    return logits[expert_idx] if expert_idx < len(logits) else float("nan")
+
+
+def validate_faith_token_range(model, tokenizer, faith_records, hard_candidates, soft_rd_scores, strength):
+    """
+    Validates that token-range-restricted steering:
+      - fires on question-span tokens (hard rate == 0.0, soft rate reduced)
+      - does NOT fire on context tokens (rates unchanged from baseline)
+    """
+    print("\n" + "=" * 60)
+    print("  Token-range validation: faithfulness question-span steering")
+    print("=" * 60)
+
+    ids_with_spans = _faith_ids_with_spans(model, tokenizer, faith_records)
+    print(f"  Records with located question span: {len(ids_with_spans)}/{len(faith_records)}")
+
+    print("  [1/3] Baseline (no steering)...")
+    baseline = collect_routing_stats_split(model, ids_with_spans)
+
+    print("  [2/3] Hard steering (question-span only)...")
+    hard_cands_with_range = {}
+    for ids, q_start, q_end in ids_with_spans:
+        # token_range varies per record — run one forward pass at a time
+        break  # we'll handle per-record below
+    # Run hard steering with per-record token_range
+    hard_layer_data = {
+        lidx: {"q_experts": [], "c_experts": [],
+               "logit_sum_q": None, "logit_sum_c": None,
+               "n_q_tokens": 0, "n_c_tokens": 0}
+        for lidx in baseline
+    }
+    current_span = [None]
+    obs_hooks = []
+    for layer_idx, layer in enumerate(model.model.layers):
+        if not hasattr(layer, "mlp") or not hasattr(layer.mlp, "gate"):
+            continue
+        def _make_hook(lidx):
+            def _hook(module, inputs, outputs):
+                h    = inputs[0].detach().float()
+                topk = outputs[0].detach().cpu()
+                seq_len = h.shape[1]
+                with torch.no_grad():
+                    logits = F.linear(h.reshape(-1, h.shape[-1]), module.weight.float())
+                topk_by_token = topk.reshape(seq_len, -1)
+                q_start, q_end = current_span[0]
+                q_end = min(q_end, seq_len)
+                if q_start < q_end:
+                    hard_layer_data[lidx]["q_experts"].extend(topk_by_token[q_start:q_end].reshape(-1).tolist())
+                    hard_layer_data[lidx]["n_q_tokens"] += q_end - q_start
+                c_idx = list(range(0, q_start)) + list(range(q_end, seq_len))
+                if c_idx:
+                    hard_layer_data[lidx]["c_experts"].extend(topk_by_token[c_idx].reshape(-1).tolist())
+                    hard_layer_data[lidx]["n_c_tokens"] += len(c_idx)
+            return _hook
+        obs_hooks.append(layer.mlp.gate.register_forward_hook(_make_hook(layer_idx)))
+
+    for ids, q_start, q_end in ids_with_spans:
+        current_span[0] = (q_start, q_end)
+        steerer = ExpertSteerer(model, hard_candidates, mode="hard", strength=strength,
+                                token_range=(q_start, q_end))
+        with torch.no_grad():
+            model(ids, use_cache=False)
+        steerer.remove()
+
+    for h in obs_hooks:
+        h.remove()
+    n = len(ids_with_spans)
+    hard = {lidx: {
+        "q_experts": d["q_experts"], "c_experts": d["c_experts"],
+        "q_logits": [], "c_logits": [],
+        "n_q_tokens": d["n_q_tokens"], "n_c_tokens": d["n_c_tokens"],
+    } for lidx, d in hard_layer_data.items()}
+
+    print("  [3/3] Soft steering (question-span only)...")
+    soft_layer_data = {
+        lidx: {"q_experts": [], "c_experts": [],
+               "logit_sum_q": None, "logit_sum_c": None,
+               "n_q_tokens": 0, "n_c_tokens": 0}
+        for lidx in baseline
+    }
+    current_span = [None]
+    obs_hooks = []
+    for layer_idx, layer in enumerate(model.model.layers):
+        if not hasattr(layer, "mlp") or not hasattr(layer.mlp, "gate"):
+            continue
+        def _make_hook(lidx):
+            def _hook(module, inputs, outputs):
+                h    = inputs[0].detach().float()
+                topk = outputs[0].detach().cpu()
+                seq_len = h.shape[1]
+                with torch.no_grad():
+                    logits = F.linear(h.reshape(-1, h.shape[-1]), module.weight.float())
+                topk_by_token = topk.reshape(seq_len, -1)
+                q_start, q_end = current_span[0]
+                q_end = min(q_end, seq_len)
+                if q_start < q_end:
+                    soft_layer_data[lidx]["q_experts"].extend(topk_by_token[q_start:q_end].reshape(-1).tolist())
+                    soft_layer_data[lidx]["n_q_tokens"] += q_end - q_start
+                    q_mean = logits[q_start:q_end].mean(dim=0).cpu()
+                    if soft_layer_data[lidx]["logit_sum_q"] is None:
+                        soft_layer_data[lidx]["logit_sum_q"] = q_mean.clone()
+                    else:
+                        soft_layer_data[lidx]["logit_sum_q"] += q_mean
+                c_idx = list(range(0, q_start)) + list(range(q_end, seq_len))
+                if c_idx:
+                    soft_layer_data[lidx]["c_experts"].extend(topk_by_token[c_idx].reshape(-1).tolist())
+                    soft_layer_data[lidx]["n_c_tokens"] += len(c_idx)
+                    c_mean = logits[c_idx].mean(dim=0).cpu()
+                    if soft_layer_data[lidx]["logit_sum_c"] is None:
+                        soft_layer_data[lidx]["logit_sum_c"] = c_mean.clone()
+                    else:
+                        soft_layer_data[lidx]["logit_sum_c"] += c_mean
+            return _hook
+        obs_hooks.append(layer.mlp.gate.register_forward_hook(_make_hook(layer_idx)))
+
+    for ids, q_start, q_end in ids_with_spans:
+        current_span[0] = (q_start, q_end)
+        steerer = ExpertSteerer(model, soft_rd_scores, mode="soft", strength=strength,
+                                token_range=(q_start, q_end))
+        with torch.no_grad():
+            model(ids, use_cache=False)
+        steerer.remove()
+
+    for h in obs_hooks:
+        h.remove()
+    soft = {lidx: {
+        "q_experts": d["q_experts"], "c_experts": d["c_experts"],
+        "q_logits": (d["logit_sum_q"] / n).tolist() if d["logit_sum_q"] is not None else [],
+        "c_logits": (d["logit_sum_c"] / n).tolist() if d["logit_sum_c"] is not None else [],
+        "n_q_tokens": d["n_q_tokens"], "n_c_tokens": d["n_c_tokens"],
+    } for lidx, d in soft_layer_data.items()}
+
+    # Build results per candidate expert
+    layers_result = {}
+    for layer_idx, expert_list in hard_candidates.items():
+        if layer_idx not in baseline:
+            continue
+        experts_result = {}
+        for ei in expert_list:
+            bq = _split_rate(baseline, layer_idx, ei, "q")
+            bc = _split_rate(baseline, layer_idx, ei, "c")
+            hq = _split_rate(hard,     layer_idx, ei, "q")
+            hc = _split_rate(hard,     layer_idx, ei, "c")
+            sq = _split_rate(soft,     layer_idx, ei, "q")
+            sc = _split_rate(soft,     layer_idx, ei, "c")
+            b_logit = _split_logit(baseline, layer_idx, ei, "q")
+            s_logit = _split_logit(soft,     layer_idx, ei, "q")
+            rd_val  = soft_rd_scores.get(layer_idx, {}).get(ei, float("nan"))
+            exp_shift = strength * rd_val if rd_val == rd_val else float("nan")
+            experts_result[str(ei)] = {
+                "baseline_q_rate":  round(bq, 4),
+                "baseline_c_rate":  round(bc, 4),
+                "hard_q_rate":      round(hq, 4),
+                "hard_c_rate":      round(hc, 4),
+                "soft_q_rate":      round(sq, 4),
+                "soft_c_rate":      round(sc, 4),
+                "hard_q_ok":        hq == 0.0,
+                "hard_c_ok":        abs(hc - bc) < 0.005,
+                "soft_q_reduced":   sq < bq or (sq == 0.0 and bq == 0.0),
+                "soft_c_ok":        abs(sc - bc) < 0.005,
+                "expected_logit_shift": round(exp_shift, 4) if exp_shift == exp_shift else None,
+                "actual_logit_shift":   round(s_logit - b_logit, 4),
+            }
+        layers_result[str(layer_idx)] = {"experts": experts_result}
+
+    all_e = [e for layer in layers_result.values() for e in layer["experts"].values()]
+    n_hq  = sum(1 for e in all_e if e["hard_q_ok"])
+    n_hc  = sum(1 for e in all_e if e["hard_c_ok"])
+    n_sq  = sum(1 for e in all_e if e["soft_q_reduced"])
+    n_sc  = sum(1 for e in all_e if e["soft_c_ok"])
+    total = len(all_e)
+    print(f"  Hard Q (== 0.0):      {n_hq}/{total}")
+    print(f"  Hard C (unchanged):   {n_hc}/{total}")
+    print(f"  Soft Q (reduced):     {n_sq}/{total}")
+    print(f"  Soft C (unchanged):   {n_sc}/{total}")
+    return layers_result
+
+
 # Main
 
 def main():
@@ -282,6 +606,10 @@ def main():
         "faithfulness", "negative", "FaithEval-Counterfactual",
     )
 
+    faith_token_range_result = validate_faith_token_range(
+        model, tokenizer, faith_records, faith_hard, faith_soft, SOFT_STRENGTH,
+    )
+
     output = {
         "config": {
             "candidate_n":   CANDIDATE_N,
@@ -300,6 +628,16 @@ def main():
             "candidates": {str(k): v for k, v in faith_hard.items()},
             "layers":     faith_result,
         },
+        "faithfulness_token_range": {
+            "description": (
+                "Token-range-restricted steering: hooks fire only on question-span "
+                "tokens [q_start:q_end], matching the Stage 1 RD measurement site. "
+                "hard_q_ok=True means the targeted expert was fully suppressed on "
+                "question tokens. hard_c_ok=True means context tokens were unaffected."
+            ),
+            "candidates": {str(k): v for k, v in faith_hard.items()},
+            "layers":     faith_token_range_result,
+        },
     }
 
     with open(OUTPUT_PATH, "w") as f:
@@ -317,6 +655,22 @@ def main():
     print(f"\nHard steering: {n_pass}/{n_total} experts pass (routing rate == 0.0)")
     if n_pass < n_total:
         print("  WARNING: some experts still fire under hard steering.")
+
+    tr_entries = [
+        e
+        for layer in faith_token_range_result.values()
+        for e in layer["experts"].values()
+    ]
+    n_hq = sum(1 for e in tr_entries if e["hard_q_ok"])
+    n_hc = sum(1 for e in tr_entries if e["hard_c_ok"])
+    n_sq = sum(1 for e in tr_entries if e["soft_q_reduced"])
+    n_sc = sum(1 for e in tr_entries if e["soft_c_ok"])
+    n_tr = len(tr_entries)
+    print(f"\nToken-range validation:")
+    print(f"  Hard  Q suppressed (== 0.0):  {n_hq}/{n_tr}")
+    print(f"  Hard  C unchanged  (< 0.005): {n_hc}/{n_tr}")
+    print(f"  Soft  Q reduced:              {n_sq}/{n_tr}")
+    print(f"  Soft  C unchanged  (< 0.005): {n_sc}/{n_tr}")
 
 
 if __name__ == "__main__":

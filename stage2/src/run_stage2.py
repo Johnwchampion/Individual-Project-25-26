@@ -26,11 +26,10 @@ from classify import LlamaGuardClassifier
 from load_safety import load_advbench, FORCED_PREFIX, SAFETY_SYSTEM_PROMPT
 from load_faith import (
     load_faitheval_counterfactual,
-    load_faitheval_unanswerable,
-    load_mctest,
+    load_race,
 )
 
-ALL_TASKS = ["safety_safe", "safety_unsafe", "faith_cf", "faith_un", "faith_mc", "fluency"]
+ALL_TASKS = ["safety_safe", "safety_unsafe", "faith_cf", "faith_race", "fluency"]
 ALL_CONDITIONS = ["baseline", "hard", "soft"]
 
 
@@ -78,12 +77,12 @@ def parse_args():
 
 # Generation
 
-def _generate(model, tokenizer, input_ids):
+def _generate(model, tokenizer, input_ids, max_new_tokens=MAX_NEW_TOKENS):
     with torch.no_grad():
         output_ids = model.generate(
             input_ids,
             attention_mask=torch.ones_like(input_ids),
-            max_new_tokens=MAX_NEW_TOKENS,
+            max_new_tokens=max_new_tokens,
             do_sample=False,
             pad_token_id=tokenizer.eos_token_id,
             use_cache=False,
@@ -125,10 +124,18 @@ def generate_plain(model, tokenizer, prompt):
 
 
 def generate_faith(model, tokenizer, record):
+    is_mcq = bool(record["options"])
     messages = [{"role": "user", "content": _build_faith_prompt(record)}]
     input_ids = tokenizer.apply_chat_template(
         messages, add_generation_prompt=True, return_tensors="pt",
     ).to(model.device)
+    if is_mcq:
+        # Prime the model with "Answer:" so first token is the letter
+        answer_prefix_ids = tokenizer(
+            "Answer:", add_special_tokens=False, return_tensors="pt",
+        )["input_ids"].to(model.device)
+        input_ids = torch.cat([input_ids, answer_prefix_ids], dim=-1)
+        return "Answer:" + _generate(model, tokenizer, input_ids, max_new_tokens=5)
     return _generate(model, tokenizer, input_ids)
 
 
@@ -142,6 +149,28 @@ def _build_faith_prompt(record):
         "Answer based only on the context. "
         "If the context does not contain enough information to answer, say so."
     )
+
+
+def _find_subsequence(seq, subseq):
+    for i in range(len(seq) - len(subseq) + 1):
+        if seq[i:i + len(subseq)] == subseq:
+            return i
+    return None
+
+
+def _get_question_token_range(tokenizer, record, full_ids):
+    """Return (start, end) token indices of the question text within full_ids, or None.
+
+    The question appears after 'Question: ' in the prompt, so the first question
+    token has a leading-space variant (e.g. 'ĠWhat') in-context.  Prepending ' '
+    before tokenising the question standalone reproduces that leading-space token,
+    allowing the subsequence search to succeed.
+    """
+    question_ids = tokenizer(" " + record["question"], add_special_tokens=False)["input_ids"]
+    start = _find_subsequence(full_ids, question_ids)
+    if start is None:
+        return None
+    return (start, start + len(question_ids))
 
 
 def _extract_mcq_letter(text):
@@ -307,22 +336,33 @@ def run_faith_batch(
     model, tokenizer, records_in,
     candidates, mode, strength, steered,
 ):
-    ctx = ExpertSteerer(model, candidates, mode=mode, strength=strength) if candidates else nullcontext()
     records_out = []
-    with ctx:
-        for idx, rec in enumerate(tqdm(records_in, desc="records", leave=False)):
+    for idx, rec in enumerate(tqdm(records_in, desc="records", leave=False)):
+        if candidates:
+            # Compute question token range so steering is restricted to the
+            # same token span used during Stage 1 RD measurement.
+            messages = [{"role": "user", "content": _build_faith_prompt(rec)}]
+            probe_ids = tokenizer.apply_chat_template(
+                messages, add_generation_prompt=True,
+            )
+            token_range = _get_question_token_range(tokenizer, rec, probe_ids)
+            ctx = ExpertSteerer(model, candidates, mode=mode, strength=strength,
+                                token_range=token_range)
+        else:
+            ctx = nullcontext()
+        with ctx:
             raw = generate_faith(model, tokenizer, rec)
-            pred = _extract_mcq_letter(raw) if rec["options"] else raw
-            correct = _faith_correct(pred, rec["gold"], rec["options"])
-            records_out.append({
-                "idx": idx,
-                "prompt": _build_faith_prompt(rec),
-                "response": raw,
-                "prediction": pred,
-                "gold": rec["gold"],
-                "correct": correct,
-                "steered": steered,
-            })
+        pred = _extract_mcq_letter(raw) if rec["options"] else raw
+        correct = _faith_correct(pred, rec["gold"], rec["options"])
+        records_out.append({
+            "idx": idx,
+            "prompt": _build_faith_prompt(rec),
+            "response": raw,
+            "prediction": pred,
+            "gold": rec["gold"],
+            "correct": correct,
+            "steered": steered,
+        })
     return records_out
 
 
@@ -422,8 +462,7 @@ def main():
     safety_prompts  = load_advbench(n=n)    if any(t in tasks for t in ["safety_safe", "safety_unsafe"]) else []
     fluency_prompts = []  # fluency task requires HH-RLHF loader — not yet implemented
     cf_records      = load_faitheval_counterfactual(n=n) if "faith_cf" in tasks else []
-    un_records      = load_faitheval_unanswerable(n=n)   if "faith_un" in tasks else []
-    mc_records      = load_mctest(n=n)                   if "faith_mc" in tasks else []
+    race_records      = load_race(n=n)                   if "faith_race" in tasks else []
 
     # ------------------------------------------------------------------
     # Safety: safe steering — suppress unsafe experts on forced-prefix prompts
@@ -472,8 +511,7 @@ def main():
     # ------------------------------------------------------------------
     faith_task_map = [
         ("faith_cf", cf_records),
-        ("faith_un", un_records),
-        ("faith_mc", mc_records),
+        ("faith_race", race_records),
     ]
     for task_key, dataset_records in faith_task_map:
         if task_key not in tasks:

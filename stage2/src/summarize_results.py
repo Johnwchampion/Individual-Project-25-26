@@ -4,7 +4,7 @@ import json
 import os
 from typing import Any
 
-TASK_ORDER = ["safety_safe", "safety_unsafe", "faith_cf", "faith_un", "faith_mc", "fluency"]
+TASK_ORDER = ["safety_safe", "safety_unsafe", "faith_cf", "faith_race", "fluency"]
 COND_ORDER = ["baseline", "hard", "soft"]
 
 

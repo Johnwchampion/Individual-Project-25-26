@@ -1,10 +1,10 @@
 #!/bin/bash
-#SBATCH --job-name=stage2_full
+#SBATCH --job-name=stage2_safety
 #SBATCH --partition=gpu
 #SBATCH --gres=gpu:1
-#SBATCH --mem=48G
+#SBATCH --mem=40G
 #SBATCH --time=24:00:00
-#SBATCH --output=/scratch/sc23jc3/stage2_full_%j.log
+#SBATCH --output=/scratch/sc23jc3/stage2_safety_%j.log
 
 source ~/envs/deepseek/bin/activate
 
@@ -24,7 +24,7 @@ echo "Results dir: $RESULTS_DIR"
 echo "Started at: $(date)"
 
 python -u src/run_stage2.py \
-  --tasks safety_safe safety_unsafe faith_cf faith_un faith_mc \
+  --tasks safety_safe safety_unsafe \
   --conditions baseline hard soft \
   --n "$N" \
   --candidate_n "$CANDIDATE_N" \

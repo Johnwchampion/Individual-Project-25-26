@@ -3,43 +3,10 @@ import torch.nn.functional as F
 
 
 class ExpertSteerer:
-    """
-    Attaches inference-time hooks to DeepSeek-V2's MoE gates to suppress
-    or reweight targeted experts.
-
-    Hard mode  (SteerMoE-faithful pre-selection):
-        A forward pre-hook modifies the gate's hidden-state input so that
-        suppressed experts' logits are driven to TARGET = -1e4 before
-        DeepSeek's native grouped top-k runs.  δh is computed per token
-        via the pseudoinverse: δh = δ_logit @ (WWᵀ)⁻¹ @ W, where
-        δ_logit[ei] = TARGET − current_logit[ei].  Non-suppressed logits
-        are unchanged exactly.  The gate handles all routing natively —
-        grouped top-k, aux loss, load balancing — preserving the model's
-        structural assumptions.
-
-    Soft mode  (novel continuous perturbation):
-        Precomputes a constant δh = δ_logit @ (WWᵀ)⁻¹ @ W where
-        δ_logit[ei] = strength × RD_score[ei].  Adding this to the gate
-        input shifts all targeted experts' logits by a fixed amount; the
-        gate routes normally on the perturbed distribution.  Unlike hard
-        mode, experts are not guaranteed to be displaced — whether they
-        fall out of top-k depends on their routing margin vs the shift.
-
-    token_range: optional (start, end) tuple. When given, hooks only modify
-        positions [start:end] in the sequence dimension, matching the
-        question-span used during Stage 1 RD measurement.
-
-    Call steerer.remove() when done, or use as a context manager.
-    """
+    """Steer DeepSeek-V2 MoE gates with hard or soft hooks."""
 
     def __init__(self, model, candidates, mode="hard", strength=1.0, token_range=None):
-        """
-        candidates:   {layer_index (int): [expert_indices]}        for hard mode
-                      {layer_index (int): {expert_idx: rd_score}} for soft mode
-        mode:         "hard" or "soft"
-        strength:     scaling factor applied to RD scores (soft mode only)
-        token_range:  optional (start, end) ints; None = all tokens
-        """
+        """Register hard or soft steering hooks."""
         self._hooks = []
         transformer = model.model
 
@@ -62,18 +29,9 @@ class ExpertSteerer:
                 )
                 self._hooks.append(hook)
 
-    # ------------------------------------------------------------------
-    # Hard mode — SteerMoE-faithful pre-selection via pseudoinverse
-    # ------------------------------------------------------------------
-
     @staticmethod
     def _compute_hard_precomp(gate, suppressed_set):
-        """
-        Precompute the rows of P = (WWᵀ)⁻¹ @ W and W for suppressed experts.
-
-        Per-token δh = δ_logit_sup @ P_rows drives suppressed logits to TARGET
-        and leaves all other logits exactly unchanged (proved by P @ Wᵀ = I).
-        """
+        """Precompute the hard-mode projection rows."""
         W = gate.weight.data.float()          # [n_experts, d_model]
         WWT_inv = torch.linalg.inv(W @ W.T)   # [n_experts, n_experts]
         P = WWT_inv @ W                        # [n_experts, d_model]
@@ -84,13 +42,7 @@ class ExpertSteerer:
 
     @staticmethod
     def _make_hard_pre_hook(precomp, token_range=None):
-        """
-        Forward pre-hook implementing SteerMoE-style pre-selection.
-
-        Computes per-token δh such that F.linear(h + δh, W)[ei] = TARGET
-        for each suppressed expert ei.  The gate then runs its complete
-        native routing (grouped top-k, aux loss) on the modified input.
-        """
+        """Build the hard-mode pre-hook."""
         TARGET = -1e4
         P_rows, W_rows = precomp  # [n_suppressed, d_model]
 
@@ -121,18 +73,9 @@ class ExpertSteerer:
 
         return hook
 
-    # ------------------------------------------------------------------
-    # Soft mode — constant pseudoinverse perturbation (novel method)
-    # ------------------------------------------------------------------
-
     @staticmethod
     def _compute_delta_h(gate, rd_scores, strength):
-        """
-        Precompute constant h perturbation for soft mode.
-
-        δh = δ_logit @ (WWᵀ)⁻¹ @ W  where  δ_logit[ei] = strength × RD[ei].
-        Same δh is added to every token's hidden state — input-independent.
-        """
+        """Precompute the soft-mode hidden-state shift."""
         W = gate.weight.data.float()
         n_experts = W.shape[0]
         delta_logit = torch.zeros(n_experts, dtype=torch.float32, device=W.device)

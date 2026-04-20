@@ -14,22 +14,7 @@ class RouteEvent:
 
 
 class RouterTracer:
-    """
-    Records MoE routing decisions during generation.
-
-    Hooks the router modules in DeepSeek-V2-Lite:
-        model.model.layers[i].mlp.gate
-
-    Output format (JSON-serialisable):
-    {
-        "example_id": str,
-        "run_tag": str,
-        "layer_traces": {
-            "model.layers.21.mlp.gate": [ {"top_experts": [...]}, ... ],
-            ...
-        }
-    }
-    """
+    """Trace DeepSeek-V2-Lite router outputs."""
 
     def __init__(self, model: torch.nn.Module) -> None:
         self._model = model
@@ -59,10 +44,7 @@ class RouterTracer:
     # Hook attachment (clean)
 
     def _attach_hooks(self) -> None:
-        """
-        Attach forward hooks to each transformer layer's MoE router:
-            layer.mlp.gate
-        """
+        """Attach hooks to each MoE router."""
         transformer = self._get_transformer()
 
         if not hasattr(transformer, "layers"):
@@ -81,7 +63,7 @@ class RouterTracer:
             self._hooks.append(hook)
 
     def _get_transformer(self) -> torch.nn.Module:
-        """Returns model.model (the transformer body inside the HF causal LM wrapper)."""
+        """Return the wrapped transformer body."""
         if hasattr(self._model, "model"):
             return getattr(self._model, "model")
         raise RuntimeError("Unexpected model structure: top-level model missing .model")
@@ -89,22 +71,24 @@ class RouterTracer:
     # Hook + extraction
 
     def _make_hook(self, layer_name: str):
+        # post-hook: receives (module, inputs, outputs) — gate inputs remain accessible
         def hook(_module: torch.nn.Module, _inputs: Tuple[Any, ...], outputs: Any) -> None:
-            if not self._active:
+            if not self._active:  # bracketed by start()/stop()
                 return
 
-            top_experts = self._extract_expert_indices(outputs)
+            top_experts = self._extract_expert_indices(outputs)  # present in gate output
             if top_experts is None:
                 return
 
+            # logits discarded by gate after top-k; recomputed from _inputs[0] and module.weight
             logit_scores = self._extract_logits(_module, _inputs)
-            event = RouteEvent(top_experts=top_experts, logit_scores=logit_scores)
+            event = RouteEvent(top_experts=top_experts, logit_scores=logit_scores)  # simple dataclass container
             self._current_trace["layer_traces"][layer_name].append(self._event_to_dict(event))
 
         return hook
 
     def _extract_expert_indices(self, outputs: Any) -> Optional[List[int]]:
-        """Finds the first int32/int64 tensor in the gate output and returns it as a flat list."""
+        """Return the first integer gate output as a flat list."""
         tensors: List[torch.Tensor] = []
 
         if isinstance(outputs, (list, tuple)):
@@ -138,14 +122,9 @@ class RouterTracer:
                 "logit_scores": event.logit_scores}
 
     def _extract_logits(self, module: torch.nn.Module, inputs: Tuple[Any, ...]) -> List[List[float]]:
-        """Recomputes pre-softmax gate logits for all experts using F.linear(hidden, weight)."""
-        if not hasattr(module, "weight") or not inputs:
-            return []
-        hidden = inputs[0]
-        if not torch.is_tensor(hidden) or hidden.ndim != 3:
-            return []
-        bsz, seq_len, hidden_dim = hidden.shape
-        hidden_flat = hidden.reshape(-1, hidden_dim).float().detach()
+
+        hidden = inputs[0]              # [bsz, seq_len, d_model]
+        h = hidden[0].float().detach()  # batch size is always 1 in this pipeline
         with torch.no_grad():
-            logits = F.linear(hidden_flat, module.weight.float())  # [seq_len, n_experts]
-        return logits.reshape(bsz, seq_len, -1)[0].detach().cpu().tolist()
+            logits = F.linear(h, module.weight.float())  # [seq_len, n_experts]
+        return logits.cpu().tolist()

@@ -184,20 +184,10 @@ def main():
     print("\nFinished all pairs")
 
 
-# ===========================================================================
 # Safety pipeline
-# ===========================================================================
 
 def find_assistant_start(tokenizer, messages):
-    """
-    Return the token index where the assistant response begins in the full
-    conversation sequence.
-
-    Strategy: tokenize all turns except the final assistant turn with
-    add_generation_prompt=True. The length of this prefix equals the start
-    index of the assistant response in the full sequence — analogous to how
-    find_subsequence locates question tokens in the faithfulness pipeline.
-    """
+    """Return the assistant start token index."""
     without_assistant = messages[:-1]  # drop the last (assistant) turn
     prefix_ids = tokenizer.apply_chat_template(
         without_assistant,
@@ -208,13 +198,7 @@ def find_assistant_start(tokenizer, messages):
 
 
 def slice_assistant_routing(trace, start_idx, end_idx, top_k=6):
-    """
-    Slice a full-sequence routing trace to cover only assistant response tokens.
-
-    Returns a tuple (routing, logits):
-      routing : {layer_name: flat list of top-k indices for the token window}
-      logits  : {layer_name: [[float * n_experts] * n_tokens] for the window}
-    """
+    """Slice routing and logits to the assistant span."""
     routing = {}
     logits = {}
 
@@ -239,17 +223,21 @@ def slice_assistant_routing(trace, start_idx, end_idx, top_k=6):
     return routing, logits
 
 
-def run_safety():
-    # Load and shuffle all safety pairs from the BeaverTails JSONL
+def run_safety(model_name=None, rd_path=None, rd_logits_path=None):
+    """Run the safety RD pipeline."""
+    if model_name    is None: model_name    = cfg.SAFETY_MODEL_NAME
+    if rd_path       is None: rd_path       = cfg.RD_SAFETY_PATH
+    if rd_logits_path is None: rd_logits_path = cfg.RD_SAFETY_LOGITS_PATH
+
+    # Load and shuffle all safety pairs from the AdvBench JSONL
     records = load_jsonl(cfg.SAFETY_DATA_DIR)
     pairs   = group_into_safety_pairs(records)
     random.shuffle(pairs)
 
     print(f"Total safety pairs loaded: {len(pairs)}")
+    print(f"Model: {model_name}")
 
-    # Load the Chat model — routing is measured over safety-trained weights,
-    # which is where alignment behaviour actually lives.
-    model, tokenizer = load_model(cfg.SAFETY_MODEL_NAME, cfg.CACHE_DIR)
+    model, tokenizer = load_model(model_name, cfg.CACHE_DIR)
     model.eval()
 
     # Attach forward hooks to all MoE gate modules in the model
@@ -359,10 +347,11 @@ def run_safety():
         logit_sum_unsafe, logit_tokens_unsafe,
     )
 
-    save_rd(rd_by_layer,        cfg.RD_SAFETY_PATH)
-    save_rd(rd_logits_by_layer, cfg.RD_SAFETY_LOGITS_PATH)
+    save_rd(rd_by_layer,        rd_path)
+    save_rd(rd_logits_by_layer, rd_logits_path)
 
     print(f"Computed RD for {len(rd_by_layer)} layers")
+    print(f"Saved to: {rd_path}")
     print("\nFinished all safety pairs")
 
 
@@ -370,9 +359,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--mode",
-        choices=["faith", "safety", "both"],
+        choices=["faith", "safety", "safety_base", "both"],
         default="both",
-        help="Which pipeline to run",
+        help="Which pipeline to run. 'safety_base' re-runs the safety pipeline "
+             "on the base (pre-finetuning) model for RQ4 comparison.",
     )
     args = parser.parse_args()
 
@@ -380,6 +370,12 @@ if __name__ == "__main__":
         main()
     elif args.mode == "safety":
         run_safety()
+    elif args.mode == "safety_base":
+        run_safety(
+            model_name=cfg.SAFETY_BASE_MODEL_NAME,
+            rd_path=cfg.RD_SAFETY_BASE_PATH,
+            rd_logits_path=cfg.RD_SAFETY_BASE_LOGITS_PATH,
+        )
     else:
         main()
         run_safety()

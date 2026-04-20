@@ -65,16 +65,7 @@ def accumulate_expert_counts(question_routing, count_dict, token_dict):
 
 
 def accumulate_mean_logits(question_logits, logit_sum_dict, token_dict):
-    """
-    Accumulate the sum of raw logit scores per expert per layer.
-
-    question_logits : {layer_name: [[float * n_experts] * n_tokens]}
-    logit_sum_dict  : running sum, {layer_name: np.array(n_experts,)}
-    token_dict      : running token count, {layer_name: int}
-
-    Divide logit_sum_dict[layer] by token_dict[layer] after all examples
-    to get the mean logit per expert for that condition.
-    """
+    """Accumulate per-expert logit sums."""
     for layer, token_logits in question_logits.items():
         if not token_logits:
             continue
@@ -113,18 +104,7 @@ def compute_rd(count_with, tokens_with, count_without, tokens_without):
 
 
 def compute_rd_logits(logit_sum_a, tokens_a, logit_sum_b, tokens_b):
-    """
-    Compute Risk Difference using mean raw logit scores.
-
-    RD_logit(expert) = mean_logit(expert | condition_a)
-                     - mean_logit(expert | condition_b)
-
-    Positive → expert scores higher on average in condition_a.
-    Negative → expert scores higher on average in condition_b.
-
-    Unlike frequency-based RD, this captures the full competition: experts
-    that nearly made the top-6 but lost still contribute their logit signal.
-    """
+    """Compute RD from mean logits."""
     rd_by_layer = {}
     for layer in logit_sum_a:
         if layer not in logit_sum_b:
@@ -140,10 +120,7 @@ def compute_rd_logits(logit_sum_a, tokens_a, logit_sum_b, tokens_b):
 
 
 def save_rd(rd_by_layer, filepath):
-    """
-    Serialise RD arrays to a JSON file for use in Stage 2.
-    Stores {layer_name: [float * n_experts]}.
-    """
+    """Save RD arrays to JSON."""
     import json
     serialisable = {layer: rd.tolist() for layer, rd in rd_by_layer.items()}
     os.makedirs(os.path.dirname(filepath), exist_ok=True)
@@ -153,10 +130,7 @@ def save_rd(rd_by_layer, filepath):
 
 
 def load_rd(filepath):
-    """
-    Load RD arrays saved by save_rd.
-    Returns {layer_name: np.array(n_experts,)}.
-    """
+    """Load RD arrays from JSON."""
     import json
     with open(filepath) as f:
         raw = json.load(f)
@@ -235,17 +209,7 @@ def plot_rd_scatter(rd_by_layer, n_samples=None,
                     color_a="#2980b9", color_b="#c0392b",
                     x_lim=None,
                     log_scale=False):
-    """
-    Butterfly scatter of significant RD values.
-
-    Positive RD → dot plotted to the RIGHT of centre (label_a preferred), color_a.
-    Negative RD → dot plotted to the LEFT of centre  (label_b preferred), color_b.
-    The central y-axis line physically separates the two conditions. Expert index
-    is printed inside each dot. Dot size is uniform so x-position alone encodes
-    magnitude without redundancy.
-    Only (layer, expert) pairs above threshold_quantile of |RD| are shown.
-    Small y-jitter separates same-layer dots.
-    """
+    """Plot RD scatter points above a threshold."""
     layers_sorted = sorted(rd_by_layer.keys(), key=lambda x: int(x.split(".")[2]))
 
     all_abs = np.concatenate([np.abs(rd) for rd in rd_by_layer.values()])
@@ -331,7 +295,6 @@ def plot_rd_scatter(rd_by_layer, n_samples=None,
     plt.close()
     print(f"Saved: {filename}")
 
-    # --- Interactive HTML (Plotly) ---
     mask_a = [c == color_a for c in colors]
     hover = [f"Expert {e}<br>Layer {l}<br>RD = {x:.6f}"
              for e, l, x in zip(expert_labels, layer_idxs, xs)]
@@ -383,13 +346,7 @@ def plot_rd_scatter(rd_by_layer, n_samples=None,
 def plot_rd_heatmap(rd_by_layer, n_samples=None,
                     filename_prefix="rd_heatmap_safety",
                     title="Expert RD Heatmap: Safe Refusal vs Unsafe Compliance"):
-    """
-    Heatmap of RD values across all layers (y-axis) and experts (x-axis).
-
-    Red  = positive RD → expert more active during safe refusal.
-    Blue = negative RD → expert more active during unsafe compliance
-                         (primary targets for deactivation in Stage 2).
-    """
+    """Plot an RD heatmap across layers and experts."""
     layers_sorted = sorted(rd_by_layer.keys(), key=lambda x: int(x.split(".")[2]))
     n_layers  = len(layers_sorted)
     n_experts = 64

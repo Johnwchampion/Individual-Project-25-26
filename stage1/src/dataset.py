@@ -104,13 +104,7 @@ class SafetyPair:
 
 
 def group_into_safety_pairs(records: List[ChatRecord]) -> List[SafetyPair]:
-	"""
-	Group alternating unsafe/safe ChatRecords into SafetyPair objects.
-
-	Expects records in strict interleaved order: unsafe, safe, unsafe, safe, ...
-	This matches the output format of prepare_safedata.py, which writes an
-	unsafe record immediately followed by its paired safe record for the same prompt.
-	"""
+	"""Group alternating unsafe/safe records into pairs."""
 	if len(records) % 2 != 0:
 		raise ValueError("Record count must be even for safety pair grouping.")
 

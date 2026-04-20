@@ -1,13 +1,5 @@
 #!/usr/bin/env python3
-"""
-Mechanistic validation of ExpertSteerer hooks.
-
-Runs 200 prompts from the actual experimental datasets (AdvBench forced prefix
-for safety, FaithEval-Counterfactual for faithfulness) under baseline, hard,
-and soft conditions. For each targeted (layer, expert) pair, checks that
-hard steering drives routing rate to zero and soft steering reduces it relative
-to baseline. Writes results to stage2/validation_result.json.
-"""
+"""Validate ExpertSteerer hooks on the real evaluation sets."""
 
 import sys
 import os
@@ -39,9 +31,7 @@ N = 200
 # Input preparation — mirrors run_stage2.py tokenisation exactly
 
 def _safety_neg_input_ids(model, tokenizer, prompts):
-    """AdvBench prompts with forced harmful prefix — mirrors generate_forced (safety_safe task).
-    Used to validate suppression of compliance-preferred experts: this is the condition
-    where those experts are most active."""
+    """Build safety-safe inputs with the forced prefix."""
     ids_list = []
     prefix_ids = tokenizer(
         FORCED_PREFIX, add_special_tokens=False, return_tensors="pt"
@@ -57,9 +47,7 @@ def _safety_neg_input_ids(model, tokenizer, prompts):
 
 
 def _safety_pos_input_ids(model, tokenizer, prompts):
-    """AdvBench prompts with safety system prompt — mirrors generate_safe_sp (safety_unsafe task).
-    Used to validate suppression of refusal-preferred experts: this is the condition
-    where those experts are most active."""
+    """Build safety-unsafe inputs with the system prompt."""
     ids_list = []
     for prompt in prompts:
         ids_list.append(
@@ -75,7 +63,7 @@ def _safety_pos_input_ids(model, tokenizer, prompts):
 
 
 def _faith_input_ids(model, tokenizer, records):
-    """FaithEval records with context — mirrors generate_faith."""
+    """Build faithfulness inputs with context."""
     ids_list = []
     for rec in records:
         header = f"Context:\n{rec['context']}\n\nQuestion: {rec['question']}"
@@ -100,18 +88,7 @@ def _faith_input_ids(model, tokenizer, records):
 # Routing data collection
 
 def collect_routing_stats(model, ids_list):
-    """
-    Run a list of pre-tokenised input_ids through the model (forward pass only).
-    Observation hooks are registered here, AFTER any ExpertSteerer hooks the
-    caller has already attached — so they see the post-intervention state.
-
-    Returns:
-        {layer_idx (int): {
-            "top_experts_flat": [int, ...],   # all selected expert slots across all tokens
-            "mean_logits":      [float, ...], # mean pre-softmax gate logit per expert
-            "n_tokens":         int,
-        }}
-    """
+    """Collect routing stats for a batch of inputs."""
     layer_data = {}
     obs_hooks  = []
 
@@ -241,12 +218,7 @@ def _find_subsequence(seq, subseq):
 
 
 def _faith_ids_with_spans(model, tokenizer, records):
-    """
-    Returns list of (input_ids, q_start, q_end) for each faith record.
-    q_start/q_end are the token indices of the question text within the
-    full chat-templated input — the same span used during Stage 1 RD measurement.
-    Records where the question span cannot be located are skipped.
-    """
+    """Build faith inputs with question token spans."""
     result = []
     for rec in records:
         header = f"Context:\n{rec['context']}\n\nQuestion: {rec['question']}"
@@ -273,22 +245,7 @@ def _faith_ids_with_spans(model, tokenizer, records):
 
 
 def collect_routing_stats_split(model, ids_with_spans):
-    """
-    Like collect_routing_stats but separately accumulates routing stats for
-    question-span tokens [q_start:q_end] and all other (context) tokens.
-
-    ids_with_spans: list of (input_ids, q_start, q_end)
-
-    Returns:
-        {layer_idx: {
-            "q_experts": [int, ...],   # expert slots for question-span tokens
-            "c_experts": [int, ...],   # expert slots for context tokens
-            "q_logits":  [float, ...], # mean gate logit per expert (question-span)
-            "c_logits":  [float, ...], # mean gate logit per expert (context)
-            "n_q_tokens": int,
-            "n_c_tokens": int,
-        }}
-    """
+    """Collect separate routing stats for question and context tokens."""
     layer_data = {}
     for layer_idx, layer in enumerate(model.model.layers):
         if not hasattr(layer, "mlp") or not hasattr(layer.mlp, "gate"):
@@ -370,7 +327,7 @@ def collect_routing_stats_split(model, ids_with_spans):
 
 
 def _split_rate(stats, layer_idx, expert_idx, span):
-    """Rate for question-span ('q') or context ('c') tokens."""
+    """Return the routing rate for one span."""
     flat = stats[layer_idx][f"{span}_experts"]
     return flat.count(expert_idx) / len(flat) if flat else 0.0
 
@@ -381,11 +338,7 @@ def _split_logit(stats, layer_idx, expert_idx, span):
 
 
 def validate_faith_token_range(model, tokenizer, faith_records, hard_candidates, soft_rd_scores, strength):
-    """
-    Validates that token-range-restricted steering:
-      - fires on question-span tokens (hard rate == 0.0, soft rate reduced)
-      - does NOT fire on context tokens (rates unchanged from baseline)
-    """
+    """Validate question-span-only steering."""
     print("\n" + "=" * 60)
     print("  Token-range validation: faithfulness question-span steering")
     print("=" * 60)

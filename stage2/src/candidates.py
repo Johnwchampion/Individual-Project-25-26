@@ -9,13 +9,7 @@ def _load_rd(path):
 
 
 def select_candidates(rd_freq_path, rd_logit_path, n, direction="negative"):
-    """
-    Returns {layer_index: [expert_indices]} for experts in the top-N by |RD|
-    on both frequency and logit metrics (intersection).
-
-    direction="negative" targets experts preferred under unsafe/context-ignoring
-    conditions; direction="positive" targets safe/faithful-preferring experts.
-    """
+    """Select top-N candidate experts from frequency and logit RD."""
     rd_freq  = _load_rd(rd_freq_path)
     rd_logit = _load_rd(rd_logit_path)
 
@@ -47,11 +41,7 @@ def select_candidates(rd_freq_path, rd_logit_path, n, direction="negative"):
 
 
 def load_rd_scores(rd_freq_path, rd_logit_path):
-    """
-    Returns {layer_index: {expert_idx: mean_rd}} for all experts across all
-    layers, where mean_rd is the normalised average of frequency and logit RD.
-    Used by soft mode to pass the continuous signal to ExpertSteerer.
-    """
+    """Load normalised RD scores for soft steering."""
     rd_freq  = _load_rd(rd_freq_path)
     rd_logit = _load_rd(rd_logit_path)
 
@@ -67,6 +57,17 @@ def load_rd_scores(rd_freq_path, rd_logit_path):
         scores[layer_idx] = {i: float(mean_rd[i]) for i in range(len(mean_rd))}
 
     return scores
+
+
+def select_random_candidates(real_candidates, n_experts=64, seed=42):
+    """Sample matched random experts from the non-candidate pool."""
+    rng = np.random.default_rng(seed)
+    random_cands = {}
+    for layer_idx, cands in real_candidates.items():
+        pool = [e for e in range(n_experts) if e not in set(cands)]
+        chosen = sorted(rng.choice(pool, size=len(cands), replace=False).tolist())
+        random_cands[layer_idx] = chosen
+    return random_cands
 
 
 def summarise_candidates(candidates):

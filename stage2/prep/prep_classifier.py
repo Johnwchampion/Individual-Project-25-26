@@ -1,7 +1,4 @@
-"""
-Downloads Llama-Guard-3-8B to CACHE_DIR. Run once on AIRE before the main job.
-    python stage2/prep/prep_classifier.py
-"""
+"""Download Llama-Guard-3-8B to CACHE_DIR."""
 
 import sys
 import os

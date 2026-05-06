@@ -6,7 +6,8 @@ _spec = importlib.util.spec_from_file_location("_stage1_config", _s1_path)
 _s1 = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_s1)
 
-SAFETY_MODEL_NAME    = _s1.SAFETY_MODEL_NAME
+FAITH_MODEL_NAME     = _s1.MODEL_NAME           # base model — matches Stage 1 faithfulness profiling
+SAFETY_MODEL_NAME    = _s1.SAFETY_MODEL_NAME    # chat model — matches Stage 1 safety profiling
 CACHE_DIR            = _s1.CACHE_DIR
 DATA_DIR             = _s1.DATA_DIR
 SAFETY_DATA_DIR      = _s1.SAFETY_DATA_DIR
@@ -28,7 +29,7 @@ MAX_NEW_TOKENS = 150
 RESULTS_DIR = os.path.join(os.path.dirname(__file__), "..", "results")
 
 __all__ = [
-    "SAFETY_MODEL_NAME", "CACHE_DIR",
+    "FAITH_MODEL_NAME", "SAFETY_MODEL_NAME", "CACHE_DIR",
     "DATA_DIR", "SAFETY_DATA_DIR",
     "RD_FAITH_PATH", "RD_FAITH_LOGITS_PATH",
     "RD_SAFETY_PATH", "RD_SAFETY_LOGITS_PATH",
